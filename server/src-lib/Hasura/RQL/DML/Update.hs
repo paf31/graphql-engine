@@ -16,6 +16,7 @@ import qualified Data.Sequence            as DS
 
 import           Hasura.EncJSON
 import           Hasura.Prelude
+import           Hasura.RQL.DML.Insert    (insertCheckExpr)
 import           Hasura.RQL.DML.Internal
 import           Hasura.RQL.DML.Mutation
 import           Hasura.RQL.DML.Returning
@@ -32,6 +33,7 @@ data AnnUpdG v
   { uqp1Table   :: !QualifiedTable
   , uqp1SetExps :: ![(PGCol, v)]
   , uqp1Where   :: !(AnnBoolExp v, AnnBoolExp v)
+  , upq1Check   :: !(AnnBoolExp v)
   -- we don't prepare the arguments for returning
   -- however the session variable can still be
   -- converted as desired
@@ -48,22 +50,30 @@ traverseAnnUpd f annUpd =
   AnnUpd tn
   <$> traverse (traverse f) setExps
   <*> ((,) <$> traverseAnnBoolExp f whr <*> traverseAnnBoolExp f fltr)
+  <*> traverseAnnBoolExp f chk
   <*> traverseMutFlds f mutFlds
   <*> pure allCols
   where
-    AnnUpd tn setExps (whr, fltr) mutFlds allCols = annUpd
+    AnnUpd tn setExps (whr, fltr) chk mutFlds allCols = annUpd
 
 type AnnUpd = AnnUpdG S.SQLExp
 
 mkUpdateCTE
   :: AnnUpd -> S.CTE
-mkUpdateCTE (AnnUpd tn setExps (permFltr, wc) _ _) =
+mkUpdateCTE (AnnUpd tn setExps (permFltr, wc) chk _ _) =
   S.CTEUpdate update
   where
-    update = S.SQLUpdate tn setExp Nothing tableFltr $ Just S.returningStar
+    update = 
+      S.SQLUpdate tn setExp Nothing tableFltr 
+        . Just 
+        . S.RetExp 
+        $ [ S.selectStar 
+          , insertCheckExpr checkExpr
+          ]
     setExp    = S.SetExp $ map S.SetExpItem setExps
-    tableFltr = Just $ S.WhereFrag $
-                toSQLBoolExp (S.QualTable tn) $ andAnnBoolExps permFltr wc
+    tableFltr = Just $ S.WhereFrag tableFltrExpr
+    tableFltrExpr = toSQLBoolExp (S.QualTable tn) $ andAnnBoolExps permFltr wc
+    checkExpr = toSQLBoolExp (S.QualTable tn) chk
 
 convInc
   :: (QErrM m)
@@ -142,6 +152,7 @@ validateUpdateQueryWith sessVarBldr prepValBldr uq = do
     (_tciViewInfo coreInfo) "updatable"
 
   -- Check if the role has update permissions
+  insPerm <- askInsPermInfo tableInfo
   updPerm <- askUpdPermInfo tableInfo
 
   -- Check if all dependent headers are present
@@ -186,6 +197,12 @@ validateUpdateQueryWith sessVarBldr prepValBldr uq = do
   annSQLBoolExp <- withPathK "where" $
     convBoolExp fieldInfoMap selPerm (uqWhere uq) sessVarBldr prepValBldr
 
+  -- Fetch and elaborate the check constraint from the insert
+  -- permissions, so that we can validate the check is still true
+  -- after the update
+  resolvedInsCheck <- convAnnBoolExpPartialSQL sessVarBldr $
+                      ipiCheck insPerm
+                      
   resolvedUpdFltr <- convAnnBoolExpPartialSQL sessVarBldr $
                      upiFilter updPerm
 
@@ -193,6 +210,7 @@ validateUpdateQueryWith sessVarBldr prepValBldr uq = do
     tableName
     setExpItems
     (resolvedUpdFltr, annSQLBoolExp)
+    resolvedInsCheck
     (mkDefaultMutFlds mAnnRetCols)
     allCols
   where

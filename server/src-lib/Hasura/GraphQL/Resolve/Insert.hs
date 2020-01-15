@@ -542,19 +542,6 @@ convertInsert role tn fld = prefixErrPath fld $ do
     arguments = _fArguments fld
     onConflictM = Map.lookup "on_conflict" arguments
 
--- helper functions
-getInsCtx
-  :: (MonadError QErr m, MonadReader r m, Has InsCtxMap r)
-  => QualifiedTable -> m InsCtx
-getInsCtx tn = do
-  ctxMap <- asks getter
-  insCtx <- onNothing (Map.lookup tn ctxMap) $
-    throw500 $ "table " <> tn <<> " not found"
-  let defValMap = fmap PSESQLExp $ S.mkColDefValMap $ map pgiColumn $
-                  Map.elems $ icAllCols insCtx
-      setCols = icSet insCtx
-  return $ insCtx {icSet = Map.union setCols defValMap}
-
 fetchVal :: (MonadError QErr m)
   => T.Text -> Map.HashMap T.Text a -> m a
 fetchVal t m = onNothing (Map.lookup t m) $ throw500 $
