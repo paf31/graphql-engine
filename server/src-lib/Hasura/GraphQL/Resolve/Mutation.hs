@@ -3,6 +3,7 @@ module Hasura.GraphQL.Resolve.Mutation
   , convertDelete
   , convertMutResp
   , buildEmptyMutResp
+  , getInsCtx
   ) where
 
 import           Data.Has
@@ -112,7 +113,7 @@ convDeleteAtPathObj colGNameMap val =
 convertUpdateP1
   :: ( MonadReusability m, MonadError QErr m
      , MonadReader r m, Has FieldMap r
-     , Has OrdByCtx r, Has SQLGenCtx r
+     , Has InsCtxMap r, Has OrdByCtx r, Has SQLGenCtx r
      )
   => UpdOpCtx -- the update context
   -> Field -- the mutation field
@@ -141,6 +142,9 @@ convertUpdateP1 opCtx fld = do
   deleteAtPathExpM <- resolveUpdateOperator "_delete_at_path" $
     convDeleteAtPathObj colGNameMap
 
+  insCtx <- getInsCtx (_uocTable opCtx)
+  let unresolvedCheckExpr = fmapAnnBoolExp partialSQLExpToUnresolvedVal (icCheck insCtx)
+  
   updateItems <- combineUpdateExpressions
                  [ setExpM, incExpM, appendExpM, prependExpM
                  , deleteKeyExpM, deleteElemExpM, deleteAtPathExpM
@@ -148,7 +152,7 @@ convertUpdateP1 opCtx fld = do
 
   mutFlds <- convertMutResp (_fType fld) $ _fSelSet fld
 
-  pure $ RU.AnnUpd tn updateItems (unresolvedPermFilter, whereExp) mutFlds allCols
+  pure $ RU.AnnUpd tn updateItems (unresolvedPermFilter, whereExp) unresolvedCheckExpr mutFlds allCols
   where
     convObjWithOp' = convObjWithOp colGNameMap
     allCols = Map.elems colGNameMap
@@ -186,7 +190,7 @@ convertUpdateP1 opCtx fld = do
 convertUpdate
   :: ( MonadReusability m, MonadError QErr m
      , MonadReader r m, Has FieldMap r
-     , Has OrdByCtx r, Has SQLGenCtx r
+     , Has InsCtxMap r, Has OrdByCtx r, Has SQLGenCtx r
      )
   => UpdOpCtx -- the update context
   -> Field -- the mutation field
@@ -225,6 +229,20 @@ convertDelete opCtx fld = do
   return $ RD.deleteQueryToTx strfyNum (annDelResolved, prepArgs)
   where
     DelOpCtx tn _ filterExp allCols = opCtx
+
+-- helper functions
+getInsCtx
+  :: (MonadError QErr m, MonadReader r m, Has InsCtxMap r)
+  => QualifiedTable -> m InsCtx
+getInsCtx tn = do
+  ctxMap <- asks getter
+  insCtx <- onNothing (Map.lookup tn ctxMap) $
+    throw500 $ "table " <> tn <<> " not found"
+  let defValMap = fmap PSESQLExp $ S.mkColDefValMap $ map pgiColumn $
+                  Map.elems $ icAllCols insCtx
+      setCols = icSet insCtx
+  return $ insCtx {icSet = Map.union setCols defValMap}
+
 
 -- | build mutation response for empty objects
 buildEmptyMutResp :: RR.MutFlds -> EncJSON
