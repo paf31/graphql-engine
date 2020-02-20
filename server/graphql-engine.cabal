@@ -230,6 +230,7 @@ library
                      , Hasura.Server.Telemetry.Counters
 
                      , Hasura.RQL.Types
+                     , Hasura.RQL.Types.Error
                      , Hasura.RQL.Types.Run
                      , Hasura.RQL.DDL.Metadata
                      , Hasura.RQL.DDL.Metadata.Types
@@ -267,7 +268,6 @@ library
                      , Hasura.RQL.Types.Common
                      , Hasura.RQL.Types.ComputedField
                      , Hasura.RQL.Types.DML
-                     , Hasura.RQL.Types.Error
                      , Hasura.RQL.Types.EventTrigger
                      , Hasura.RQL.Types.Metadata
                      , Hasura.RQL.Types.Permission
@@ -431,6 +431,25 @@ test-suite graphql-engine-tests
     Hasura.RQL.MetadataSpec
     Hasura.Server.MigrateSpec
     Hasura.Server.TelemetrySpec
+
+executable graphql-engine-integration-tests
+  import: common-all, common-exe
+  type: exitcode-stdio-1.0
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , graphql-engine
+    , hspec >=2.6.1 && <3
+    , hspec-core >=2.6.1 && <3
+    , hspec-expectations-lifted
+    , lens
+    , lens-aeson
+    , lifted-base
+    , pg-client
+    , wreq
+  hs-source-dirs: tests-hs
+  main-is: Main.hs
 
 -- Benchmarks related to caching (e.g. the plan cache).
 --
