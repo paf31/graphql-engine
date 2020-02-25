@@ -1,0 +1,10 @@
+{
+    "data": {
+        "customer": [
+            {
+                "id": 1,
+                "name": "John Smith"
+            }
+        ]
+    }
+}

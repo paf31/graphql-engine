@@ -1,0 +1,6 @@
+query Query1 {
+  customer {
+    id
+    name
+  }
+}

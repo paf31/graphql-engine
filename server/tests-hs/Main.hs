@@ -3,19 +3,32 @@ module Main where
 import           Hasura.Prelude
 
 import           Control.Exception.Lifted (finally)
-import           Control.Lens             ((^.), (^..))
+import           Control.Lens             ((^.))
 import           Data.Aeson               ((.=))
-import           Data.Aeson.Lens          (_String, key, values)
 import           Data.String              (fromString)
+import           Data.Text                (unpack)
+import           Data.Text.Encoding       (decodeUtf8)
 import           Hasura.Db                (defaultTxErrorHandler)
 import           Hasura.RQL.Types.Error   (QErr)
-import           Test.Hspec               (describe, it)
+import           System.FilePath.Posix    ((</>))
+import           Test.Hspec.Core.Spec     (Example(..), describe, it)
+import           Test.Hspec.Golden        (Golden(..), defaultGolden)
 
 import qualified Data.Aeson               as Aeson
+import qualified Data.Aeson.Encode.Pretty as Pretty
+import qualified Data.ByteString.Lazy     as BL
+import qualified Data.Text.IO             as Text
 import qualified Database.PG.Query        as Q
 import qualified System.Environment       as Env
 import qualified Network.Wreq             as Wreq
 import qualified Test.Hspec               as Hspec
+    
+newtype GoldenIO = GoldenIO (IO (Golden Aeson.Value))
+    
+instance Example GoldenIO where
+  type Arg GoldenIO = ()
+  evaluateExample (GoldenIO gio) p f k = gio >>= \g ->
+    evaluateExample g p f k
     
 main :: IO ()
 main = do
@@ -72,24 +85,27 @@ main = do
             [Q.sql| DROP TABLE customer |] 
             () True
     
+        testFile :: String -> GoldenIO
+        testFile testName = GoldenIO do
+          query <- Text.readFile ("tests-hs" </> "golden" </> testName </> "query")
+          res <- Wreq.asValue =<< Wreq.post (endpoint <> "/v1/graphql") 
+            (Aeson.object [ "query" .= query ])
+          (res ^. Wreq.responseStatus . Wreq.statusCode) 
+            `Hspec.shouldBe` 200
+          pure Golden 
+            { output = res ^. Wreq.responseBody
+            , encodePretty = unpack . decodeUtf8 . BL.toStrict . Pretty.encodePretty
+            , testName = testName
+            , writeToFile = \path -> BL.writeFile path . Pretty.encodePretty
+            , readFromFile = fmap (either error id) . Aeson.eitherDecodeFileStrict
+            , directory = "tests-hs" </> "golden"
+            }
+    
     flip finally teardown do
       setup
       liftIO $ Hspec.hspec do
         describe "v1/graphql" do
           it "responds to basic queries" do
-            res <- Wreq.asValue =<< Wreq.post (endpoint <> "/v1/graphql") 
-              (Aeson.object 
-                [ "query" .= id @Text 
-                    "query Customers { \
-                    \  customer {      \
-                    \    id,           \
-                    \    name          \
-                    \  }               \
-                    \}"
-                ])
-            (res ^. Wreq.responseStatus . Wreq.statusCode) 
-              `Hspec.shouldBe` 200
-            (res ^.. Wreq.responseBody . key "data" . key "customer" . values . key "name" . _String) 
-              `Hspec.shouldBe` ["John Smith"]
+            testFile "query_all_customers"
     
   either print pure e
