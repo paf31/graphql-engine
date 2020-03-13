@@ -3,6 +3,7 @@
 
 module Hasura.Server.App where
 
+import           Control.Concurrent                     (killThread)
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception                      (IOException, try)
 import           Control.Lens                           (view, _2)
@@ -12,6 +13,7 @@ import           Data.Aeson                             hiding (json)
 import           Data.Either                            (isRight)
 import           Data.Int                               (Int64)
 import           Data.IORef
+import           Data.These                             (These)
 import           Data.Time.Clock                        (UTCTime)
 import           Data.Time.Clock.POSIX                  (getPOSIXTime)
 import           Network.Mime                           (defaultMimeLookup)
@@ -32,6 +34,7 @@ import qualified Network.Wai.Handler.WebSockets         as WS
 import qualified Network.WebSockets                     as WS
 import qualified System.Metrics                         as EKG
 import qualified System.Metrics.Json                    as EKG
+import qualified System.Remote.Monitoring.Statsd        as Statsd
 import qualified Text.Mustache                          as M
 import qualified Web.Spock.Core                         as Spock
 
@@ -461,9 +464,10 @@ mkWaiApp
   -> S.HashSet API
   -> EL.LiveQueriesOptions
   -> E.PlanCacheOptions
+  -> Maybe (These Text Int) -- ^ statsd host and port
   -> m HasuraApp
 mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg enableConsole consoleAssetsDir
-         enableTelemetry instanceId apis lqOpts planCacheOptions = do
+         enableTelemetry instanceId apis lqOpts planCacheOptions statsdOpts = do
 
     let pgExecCtx = PGExecCtx pool isoLevel
         pgExecCtxSer = PGExecCtx pool Q.Serializable
@@ -509,6 +513,21 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
       liftIO $ EKG.registerGcMetrics ekgStore
       liftIO $ EKG.registerCounter "ekg.server_timestamp_ms" getTimeMs ekgStore
 
+    -- fork the statsd reporting thread if the user specified either the host or port
+    killStatsd <- for statsdOpts \hostPort -> liftIO do
+      let (host, port) = fromThese "127.0.0.1" 8125 hostPort
+          opts = Statsd.defaultStatsdOptions
+                   { Statsd.host = host
+                   , Statsd.port = port
+                   }
+      statsd <- Statsd.forkStatsd opts ekgStore
+      L.unLogger logger $
+        StartupLog L.LevelInfo "statsd-thread" $
+          object [ "thread_id" .= show (Statsd.statsdThreadId statsd)
+                 , "message" .= ("statsd reporting thread started" :: Text)
+                 ]
+      pure (killThread (Statsd.statsdThreadId statsd))
+
     spockApp <- liftWithStateless $ \lowerIO ->
       Spock.spockAsApp $ Spock.spockT lowerIO $ httpApp corsCfg serverCtx enableConsole consoleAssetsDir enableTelemetry
 
@@ -518,7 +537,7 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
     waiApp <- liftWithStateless $ \lowerIO ->
       pure $ WS.websocketsOr WS.defaultConnectionOptions (lowerIO . wsServerApp) spockApp
 
-    return $ HasuraApp waiApp schemaCacheRef cacheBuiltTime stopWSServer
+    return $ HasuraApp waiApp schemaCacheRef cacheBuiltTime (stopWSServer *> sequence_ killStatsd)
   where
     getTimeMs :: IO Int64
     getTimeMs = (round . (* 1000)) `fmap` getPOSIXTime

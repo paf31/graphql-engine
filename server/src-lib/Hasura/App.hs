@@ -8,6 +8,7 @@ import           Control.Monad.Stateless
 import           Control.Monad.STM                    (atomically)
 import           Control.Monad.Trans.Control          (MonadBaseControl (..))
 import           Data.Aeson                           ((.=))
+import           Data.Align                           (align)
 import           Data.Time.Clock                      (UTCTime, getCurrentTime)
 import           Options.Applicative
 import           System.Environment                   (getEnvironment, lookupEnv)
@@ -211,6 +212,8 @@ runHGEServer ServeOptions{..} InitCtx{..} initTime = do
 
   authMode <- either (printErrExit . T.unpack) return authModeRes
 
+  let statsdHostPort = align soStatsdHost soStatsdPort
+  
   HasuraApp app cacheRef cacheInitTime shutdownApp <- mkWaiApp soTxIso
                                                                logger
                                                                sqlGenCtx
@@ -227,6 +230,7 @@ runHGEServer ServeOptions{..} InitCtx{..} initTime = do
                                                                soEnabledAPIs
                                                                soLiveQueryOpts
                                                                soPlanCacheOptions
+                                                               statsdHostPort
 
   -- log inconsistent schema objects
   inconsObjs <- scInconsistentObjs <$> liftIO (getSCFromRef cacheRef)

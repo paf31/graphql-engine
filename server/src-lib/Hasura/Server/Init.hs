@@ -93,6 +93,8 @@ data RawServeOptions impl
   , rsoEnabledLogTypes  :: !(Maybe [L.EngineLogType impl])
   , rsoLogLevel         :: !(Maybe L.LogLevel)
   , rsoPlanCacheSize    :: !(Maybe Cache.CacheSize)
+  , rsoStatsdHost       :: !(Maybe Text)
+  , rsoStatsdPort       :: !(Maybe Int)
   }
 
 data ServeOptions impl
@@ -116,6 +118,8 @@ data ServeOptions impl
   , soEnabledLogTypes  :: !(Set.HashSet (L.EngineLogType impl))
   , soLogLevel         :: !L.LogLevel
   , soPlanCacheOptions :: !E.PlanCacheOptions
+  , soStatsdHost       :: !(Maybe Text)
+  , soStatsdPort       :: !(Maybe Int)
   }
 
 data DowngradeOptions
@@ -341,10 +345,13 @@ mkServeOptions rso = do
                  withEnv (rsoEnabledLogTypes rso) (fst enabledLogsEnv)
   serverLogLevel <- fromMaybe L.LevelInfo <$> withEnv (rsoLogLevel rso) (fst logLevelEnv)
   planCacheOptions <- E.mkPlanCacheOptions <$> withEnv (rsoPlanCacheSize rso) (fst planCacheSizeEnv)
+  statsdHost <- withEnv (rsoStatsdHost rso) (fst statsdHostEnv)
+  statsdPort <- withEnv (rsoStatsdPort rso) (fst statsdPortEnv)
   return $ ServeOptions port host connParams txIso adminScrt authHook jwtSecret
                         unAuthRole corsCfg enableConsole consoleAssetsDir
                         enableTelemetry strfyNum enabledAPIs lqOpts enableAL
                         enabledLogs serverLogLevel planCacheOptions
+                        statsdHost statsdPort
   where
 #ifdef DeveloperAPIs
     defaultAPIs = [METADATA,GRAPHQL,PGDUMP,CONFIG,DEVELOPER]
@@ -479,7 +486,7 @@ serveCmdFooter =
       , adminSecretEnv , accessKeyEnv, authHookEnv, authHookModeEnv
       , jwtSecretEnv, unAuthRoleEnv, corsDomainEnv, corsDisableEnv, enableConsoleEnv
       , enableTelemetryEnv, wsReadCookieEnv, stringifyNumEnv, enabledAPIsEnv
-      , enableAllowlistEnv, enabledLogsEnv, logLevelEnv
+      , enableAllowlistEnv, enabledLogsEnv, logLevelEnv, statsdHostEnv, statsdPortEnv
       ]
 
     eventEnvs =
@@ -508,6 +515,18 @@ serveHostEnv :: (String, String)
 serveHostEnv =
   ( "HASURA_GRAPHQL_SERVER_HOST"
   , "Host on which graphql-engine will listen (default: *)"
+  )
+
+statsdHostEnv :: (String, String)
+statsdHostEnv =
+  ( "HASURA_STATSD_HOST"
+  , "Host on which the statsd daemon should be listening"
+  )
+
+statsdPortEnv :: (String, String)
+statsdPortEnv =
+  ( "HASURA_STATSD_PORT"
+  , "Port on which the statsd daemon should be listening"
   )
 
 pgConnsEnv :: (String, String)
@@ -773,6 +792,22 @@ parseServerHost = optional $ strOption ( long "server-host" <>
                 metavar "<HOST>" <>
                 help "Host on which graphql-engine will listen (default: *)"
               )
+
+parseStatsdPort :: Parser (Maybe Int)
+parseStatsdPort = optional $
+  option auto
+    ( long "statsd-port" <>
+       metavar "<PORT>" <>
+       help (snd servePortEnv)
+    )
+
+parseStatsdHost :: Parser (Maybe Text)
+parseStatsdHost = optional $
+ strOption
+   ( long "statsd-host" <>
+     metavar "<HOST>" <>
+     help (snd serveHostEnv)
+   )
 
 parseAccessKey :: Parser (Maybe AdminSecret)
 parseAccessKey =
@@ -1082,6 +1117,8 @@ serveOptionsParser =
   <*> parseEnabledLogs
   <*> parseLogLevel
   <*> parsePlanCacheSize
+  <*> parseStatsdHost
+  <*> parseStatsdPort
 
 -- | This implements the mapping between application versions
 -- and catalog schema versions.

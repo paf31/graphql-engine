@@ -173,6 +173,7 @@ library
                      -- for capturing various metrics
                      , ekg-core
                      , ekg-json
+                     , ekg-statsd
 
                      -- metrics for CI integration
                      , ci-info
