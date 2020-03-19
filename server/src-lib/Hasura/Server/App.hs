@@ -519,6 +519,7 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
           opts = Statsd.defaultStatsdOptions
                    { Statsd.host = host
                    , Statsd.port = port
+                   , Statsd.tags = [("hge-instance-id", getInstanceId instanceId)]
                    }
       statsd <- Statsd.forkStatsd opts ekgStore
       L.unLogger logger $

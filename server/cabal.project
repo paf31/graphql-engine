@@ -40,3 +40,8 @@ source-repository-package
   type: git
   location: https://github.com/hasura/ci-info-hs.git
   tag: 6af5a68450347a02295a9cd050d05a8b2f5c06ab
+  
+source-repository-package
+  type: git
+  location: https://github.com/paf31/ekg-statsd.git
+  tag: f59cf5d97bdb7ea1b9e39ae09d51f9d1c95279e0
