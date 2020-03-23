@@ -15,7 +15,7 @@ import           Data.Int                               (Int64)
 import           Data.IORef
 import           Data.These                             (These)
 import           Data.Time.Clock                        (UTCTime)
-import           Data.Time.Clock.POSIX                  (getPOSIXTime)
+import           Data.Time.Clock.POSIX                  (POSIXTime, getPOSIXTime)
 import           Network.Mime                           (defaultMimeLookup)
 import           System.Exit                            (exitFailure)
 import           System.FilePath                        (joinPath, takeFileName)
@@ -34,6 +34,7 @@ import qualified Network.Wai.Handler.WebSockets         as WS
 import qualified Network.WebSockets                     as WS
 import qualified System.Metrics                         as EKG
 import qualified System.Metrics.Json                    as EKG
+import qualified System.Random                          as Random
 import qualified System.Remote.Monitoring.Statsd        as Statsd
 import qualified Text.Mustache                          as M
 import qualified Web.Spock.Core                         as Spock
@@ -535,10 +536,64 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
     let wsServerApp = WS.createWSServerApp mode wsServerEnv
         stopWSServer = WS.stopWSServerApp wsServerEnv
 
+    let tracingMiddleware :: Wai.Middleware
+        tracingMiddleware app req k = do
+          t1 <- getPOSIXTime
+          app req \res -> do
+            t2 <- getPOSIXTime
+            sendTimingInfo req t1 t2
+            k res
+            
+        sendTimingInfo :: Wai.Request -> POSIXTime -> POSIXTime -> IO ()
+        sendTimingInfo req t1 t2 = do
+          traceId <- Random.randomIO :: IO Word64
+          spanId <- Random.randomIO :: IO Word64
+          
+          let traces :: [[Value]]
+              traces = 
+                [ [ object
+                    [ "trace_id"  .= traceId
+                    -- The unique integer (64-bit unsigned) ID of the trace containing this span.
+                    , "span_id"   .= spanId
+                    -- The span integer (64-bit unsigned) ID.
+                    , "name"      .= id @Text ""
+                    -- The span name. The span name must not be longer than 100 characters.
+                    , "resource"  .= bsToTxt (Wai.rawPathInfo req)
+                    -- The resource you are tracing. The resource name must not be longer than 5000 characters.
+                    , "service"   .= id @Text "graphql-engine"
+                    -- The service you are tracing. The service name must not be longer than 100 characters.
+                    , "type"      .= id @Text "web"
+                    -- default=custom, case-sensitive The type of request. The options available are web, db, cache, and custom.
+                    , "start"     .= (truncate (t1 * 1e9) :: Integer)
+                    -- The start time of the request in nanoseconds from the unix epoch.
+                    , "duration"  .= (truncate ((t2 - t1) * 1e9) :: Integer)
+                    -- The duration of the request in nanoseconds.
+                    , "meta"      .= object
+                                       [ "query"  .= bsToTxt (Wai.rawQueryString req)
+                                       , "method" .= bsToTxt (Wai.requestMethod req)
+                                       ]
+                    -- A set of key-value metadata. Keys and values must be strings.
+                    ]
+                  ]
+                ]
+
+          initialRequest <- HTTP.parseRequest "http://localhost:8126/v0.4/traces"
+          let request = initialRequest 
+                { HTTP.method = "PUT"
+                , HTTP.requestBody = HTTP.RequestBodyLBS (encode traces)
+                , HTTP.requestHeaders =
+                    [ ("Content-type", "application/json")
+                    , ("X-Datadog-Trace-Count", "1")
+                    ]
+                }
+          response <- HTTP.httpLbs request httpManager
+          print response
+          pure ()
+
     waiApp <- liftWithStateless $ \lowerIO ->
       pure $ WS.websocketsOr WS.defaultConnectionOptions (lowerIO . wsServerApp) spockApp
 
-    return $ HasuraApp waiApp schemaCacheRef cacheBuiltTime (stopWSServer *> sequence_ killStatsd)
+    return $ HasuraApp (tracingMiddleware waiApp) schemaCacheRef cacheBuiltTime (stopWSServer *> sequence_ killStatsd)
   where
     getTimeMs :: IO Int64
     getTimeMs = (round . (* 1000)) `fmap` getPOSIXTime

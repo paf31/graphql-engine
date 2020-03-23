@@ -198,6 +198,8 @@ library
                      , ghc-heap-view == 0.6.0
                      
                      , directory
+                     
+                     , random
 
   exposed-modules:     Control.Arrow.Extended
                      , Control.Arrow.Trans
