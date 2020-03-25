@@ -52,6 +52,7 @@ import           Hasura.Server.Query                  (requiresAdmin, runQueryM)
 import           Hasura.Server.SchemaUpdate
 import           Hasura.Server.Telemetry
 import           Hasura.Server.Version
+import qualified Hasura.Tracing                       as Tracing
 
 
 printErrExit :: (MonadIO m) => forall a . String -> m a
@@ -195,6 +196,7 @@ runHGEServer
      , UserAuthentication m
      , MetadataApiAuthorization m
      , HttpLog m
+     , Tracing.MonadTrace m
      , ConsoleRenderer m
      , LA.Forall (LA.Pure m)
      )
@@ -351,6 +353,7 @@ execQuery queryBs = do
   buildSchemaCacheStrict
   encJToLBS <$> runQueryM query
 
+instance Tracing.MonadTrace AppM
 
 instance HttpLog AppM where
   logHttpError logger userInfoM reqId httpReq req qErr headers =

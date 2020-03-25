@@ -20,6 +20,7 @@ import           System.FilePath                        (joinPath, takeFileName)
 import           Web.Spock.Core                         ((<//>))
 
 import qualified Control.Concurrent.Async.Lifted.Safe   as LA
+import qualified Data.ByteString.Char8                  as BS8
 import qualified Data.ByteString.Lazy                   as BL
 import qualified Data.CaseInsensitive                   as CI
 import qualified Data.HashMap.Strict                    as M
@@ -62,6 +63,7 @@ import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Transport.WebSocket     as WS
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.PGDump                   as PGD
+import qualified Hasura.Tracing                         as Tracing
 
 
 data SchemaCacheRef
@@ -444,6 +446,7 @@ mkWaiApp
      , MonadStateless IO m
      , ConsoleRenderer m
      , HttpLog m
+     , Tracing.MonadTrace m
      , UserAuthentication m
      , MetadataApiAuthorization m
      , LA.Forall (LA.Pure m)
@@ -511,9 +514,11 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
     when (isDeveloperAPIEnabled serverCtx) $ do
       liftIO $ EKG.registerGcMetrics ekgStore
       liftIO $ EKG.registerCounter "ekg.server_timestamp_ms" getTimeMs ekgStore
-
+      
+    tracer <- Tracing.askTracer
+    
     spockApp <- liftWithStateless $ \lowerIO ->
-      Spock.spockAsApp $ Spock.spockT lowerIO $ httpApp corsCfg serverCtx enableConsole consoleAssetsDir enableTelemetry
+      Spock.spockAsApp $ fmap (Tracing.tracerMiddleware tracer .) $ Spock.spockT lowerIO $ httpApp corsCfg serverCtx enableConsole consoleAssetsDir enableTelemetry
 
     let wsServerApp = WS.createWSServerApp mode wsServerEnv
         stopWSServer = WS.stopWSServerApp wsServerEnv

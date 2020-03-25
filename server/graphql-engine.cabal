@@ -218,6 +218,7 @@ library
                      , Hasura.Logging
                      , Hasura.HTTP
                      , Hasura.Incremental
+                     , Hasura.Tracing
 
                      , Hasura.Server.App
                      , Hasura.Server.Auth
