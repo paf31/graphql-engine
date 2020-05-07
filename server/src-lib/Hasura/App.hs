@@ -53,7 +53,7 @@ import           Hasura.Server.SchemaUpdate
 import           Hasura.Server.Telemetry
 import           Hasura.Server.Version
 import           Hasura.Session
-
+import qualified Hasura.Tracing                       as Tracing
 
 printErrExit :: (MonadIO m) => forall a . String -> m a
 printErrExit = liftIO . (>> exitFailure) . putStrLn
@@ -190,6 +190,7 @@ runHGEServer
      , HttpLog m
      , ConsoleRenderer m
      , LA.Forall (LA.Pure m)
+     , Tracing.HasReporter m
      )
   => ServeOptions impl
   -> InitCtx
@@ -379,6 +380,7 @@ execQuery queryBs = do
   buildSchemaCacheStrict
   encJToLBS <$> runQueryM query
 
+instance Tracing.HasReporter AppM
 
 instance HttpLog AppM where
   logHttpError logger userInfoM reqId httpReq req qErr headers =

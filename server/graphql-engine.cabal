@@ -196,6 +196,9 @@ library
                      , ghc-heap-view == 0.6.0
 
                      , directory
+                     
+                     , random
+                     , mmorph
 
   exposed-modules:     Control.Arrow.Extended
                      , Control.Arrow.Trans
@@ -241,6 +244,7 @@ library
                      , Hasura.RQL.DDL.Schema
                      , Hasura.EncJSON
                      , Hasura.Session
+                     , Hasura.Tracing
 
                      , Data.Aeson.Ordered
 

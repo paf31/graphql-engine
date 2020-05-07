@@ -6,6 +6,7 @@ module Hasura.Server.App where
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception                      (IOException, try)
 import           Control.Lens                           (view, _2)
+import           Control.Monad.Morph                    (hoist)
 import           Control.Monad.Stateless
 import           Control.Monad.Trans.Control            (MonadBaseControl)
 import           Data.Aeson                             hiding (json)
@@ -20,6 +21,7 @@ import           System.FilePath                        (joinPath, takeFileName)
 import           Web.Spock.Core                         ((<//>))
 
 import qualified Control.Concurrent.Async.Lifted.Safe   as LA
+import qualified Data.ByteString.Char8                  as B8
 import qualified Data.ByteString.Lazy                   as BL
 import qualified Data.CaseInsensitive                   as CI
 import qualified Data.HashMap.Strict                    as M
@@ -65,7 +67,7 @@ import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Transport.WebSocket     as WS
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.API.PGDump               as PGD
-
+import qualified Hasura.Tracing                         as Tracing
 
 data SchemaCacheRef
   = SchemaCacheRef
@@ -208,17 +210,20 @@ setHeader (headerName, headerValue) =
   Spock.setHeader (bsToTxt $ CI.original headerName) (bsToTxt headerValue)
 
 -- | Typeclass representing the metadata API authorization effect
-class MetadataApiAuthorization m where
+class Monad m => MetadataApiAuthorization m where
   authorizeMetadataApi :: RQLQuery -> UserInfo -> Handler m ()
 
+instance MetadataApiAuthorization m => MetadataApiAuthorization (Tracing.TraceT m) where
+  authorizeMetadataApi q ui = hoist (hoist lift) $ authorizeMetadataApi q ui
+
 mkSpockAction
-  :: (HasVersion, MonadIO m, FromJSON a, ToJSON a, UserAuthentication m, HttpLog m)
+  :: (HasVersion, MonadIO m, FromJSON a, ToJSON a, UserAuthentication m, HttpLog m, Tracing.HasReporter m)
   => ServerCtx
   -> (Bool -> QErr -> Value)
   -- ^ `QErr` JSON encoder function
   -> (QErr -> QErr)
   -- ^ `QErr` modifier
-  -> APIHandler m a
+  -> APIHandler (Tracing.TraceT m) a
   -> Spock.ActionT m ()
 mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
     req <- Spock.request
@@ -227,6 +232,8 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
     let headers = Wai.requestHeaders req
         authMode = scAuthMode serverCtx
         manager = scManager serverCtx
+        pathInfo = Wai.rawPathInfo req
+        runTraceT = Tracing.runTraceT (B8.unpack pathInfo)
 
     requestId <- getRequestId headers
 
@@ -240,13 +247,13 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
 
     (serviceTime, (result, q)) <- withElapsedTime $ case apiHandler of
       AHGet handler -> do
-        res <- lift $ runReaderT (runExceptT handler) handlerState
+        res <- lift $ runTraceT $ runReaderT (runExceptT handler) handlerState
         return (res, Nothing)
       AHPost handler -> do
         parsedReqE <- runExceptT $ parseBody reqBody
         parsedReq  <- either (logErrorAndResp (Just userInfo) requestId req (Left reqBody) includeInternal headers . qErrModifier)
                       return parsedReqE
-        res <- lift $ runReaderT (runExceptT $ handler parsedReq) handlerState
+        res <- lift $ runTraceT $ runReaderT (runExceptT $ handler parsedReq) handlerState
         return (res, Just parsedReq)
 
     -- apply the error modifier
@@ -391,6 +398,9 @@ consoleAssetsHandler logger dir path = do
 class (Monad m) => ConsoleRenderer m where
   renderConsole :: HasVersion => T.Text -> AuthMode -> Bool -> Maybe Text -> m (Either String Text)
 
+instance ConsoleRenderer m => ConsoleRenderer (Tracing.TraceT m) where
+  renderConsole a b c d = lift $ renderConsole a b c d
+  
 renderHtmlTemplate :: M.Template -> Value -> Either String Text
 renderHtmlTemplate template jVal =
   bool (Left errMsg) (Right res) $ null errs
@@ -454,6 +464,7 @@ mkWaiApp
      , UserAuthentication m
      , MetadataApiAuthorization m
      , LA.Forall (LA.Pure m)
+     , Tracing.HasReporter m
      )
   => Q.TxIsolation
   -> L.Logger L.Hasura
@@ -548,7 +559,7 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
       pure (planCache, cacheRef, view _2 <$> lastUpdateEvent)
 
 httpApp
-  :: (HasVersion, MonadIO m, MonadBaseControl IO m, ConsoleRenderer m, HttpLog m, UserAuthentication m, MetadataApiAuthorization m)
+  :: (HasVersion, MonadIO m, MonadBaseControl IO m, ConsoleRenderer m, HttpLog m, UserAuthentication m, MetadataApiAuthorization m, Tracing.HasReporter m)
   => CorsConfig
   -> ServerCtx
   -> Bool
@@ -646,9 +657,9 @@ httpApp corsCfg serverCtx enableConsole consoleAssetsDir enableTelemetry = do
     logger = scLogger serverCtx
 
     spockAction
-      :: (FromJSON a, ToJSON a, MonadIO m, UserAuthentication m, HttpLog m)
+      :: (FromJSON a, ToJSON a, MonadIO m, UserAuthentication m, HttpLog m, Tracing.HasReporter m)
       => (Bool -> QErr -> Value)
-      -> (QErr -> QErr) -> APIHandler m a -> Spock.ActionT m ()
+      -> (QErr -> QErr) -> APIHandler (Tracing.TraceT m) a -> Spock.ActionT m ()
     spockAction = mkSpockAction serverCtx
 
 

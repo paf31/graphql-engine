@@ -1,4 +1,6 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DerivingStrategies         #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RecordWildCards            #-}
 
 module Hasura.Server.Auth
   ( getUserInfo
@@ -36,6 +38,7 @@ import           Hasura.Server.Auth.JWT
 import           Hasura.Server.Auth.WebHook
 import           Hasura.Server.Utils
 import           Hasura.Session
+import           Hasura.Tracing              (TraceT)
 
 -- | Typeclass representing the @UserInfo@ authorization and resolving effect
 class (Monad m) => UserAuthentication m where
@@ -47,6 +50,9 @@ class (Monad m) => UserAuthentication m where
     -- ^ request headers
     -> AuthMode
     -> m (Either QErr (UserInfo, Maybe UTCTime))
+
+instance UserAuthentication m => UserAuthentication (TraceT m) where
+  resolveUserInfo a b c d = lift $ resolveUserInfo a b c d
 
 newtype AdminSecret
   = AdminSecret { getAdminSecret :: T.Text }
