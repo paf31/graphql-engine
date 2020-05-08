@@ -154,7 +154,8 @@ buildSchemaCacheRule
   -- Note: by supplying BuildReason via MonadReader, it does not participate in caching, which is
   -- what we want!
   :: ( HasVersion, ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
-     , MonadIO m, MonadTx m, MonadReader BuildReason m, HasHttpManager m, HasSQLGenCtx m )
+     , MonadIO m, MonadTx m, MonadReader BuildReason m, HasHttpManager m
+     , HasSQLGenCtx m )
   => (CatalogMetadata, InvalidationKeys) `arr` SchemaCache
 buildSchemaCacheRule = proc (catalogMetadata, invalidationKeys) -> do
   invalidationKeysDep <- Inc.newDependency -< invalidationKeys

@@ -59,6 +59,7 @@ import qualified Hasura.GraphQL.Execute.LiveQuery.Poll       as LQ
 import qualified Hasura.GraphQL.Transport.WebSocket.Server   as WS
 import qualified Hasura.Logging                              as L
 import qualified Hasura.Server.Telemetry.Counters            as Telem
+import qualified Hasura.Tracing                              as Tracing
 
 -- | 'LQ.LiveQueryId' comes from 'Hasura.GraphQL.Execute.LiveQuery.State.addLiveQuery'. We use
 -- this to track a connection's operations so we can remove them from 'LiveQueryState', and
@@ -284,7 +285,7 @@ onConn (L.Logger logger) corsPolicy wsId requestHead = do
             <> "HASURA_GRAPHQL_WS_READ_COOKIE to force read cookie when CORS is disabled."
 
 
-onStart :: HasVersion => WSServerEnv -> WSConn -> StartMsg -> IO ()
+onStart :: forall io. (HasVersion, MonadIO io, Tracing.MonadTrace io) => WSServerEnv -> WSConn -> StartMsg -> io ()
 onStart serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
   timerTot <- startTimer
   opM <- liftIO $ STM.atomically $ STMMap.lookup opId opMap
@@ -320,9 +321,9 @@ onStart serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
       runRemoteGQ timerTot telemCacheHit execCtx requestId userInfo reqHdrs opDef rsi
   where
     telemTransport = Telem.HTTP
-    runHasuraGQ :: ExceptT () IO DiffTime
+    runHasuraGQ :: ExceptT () io DiffTime
                 -> Telem.CacheHit -> RequestId -> GQLReqUnparsed -> UserInfo -> E.ExecOp
-                -> ExceptT () IO ()
+                -> ExceptT () io ()
     runHasuraGQ timerTot telemCacheHit reqId query userInfo = \case
       E.ExOpQuery opTx genSql ->
         execQueryOrMut Telem.Query genSql $ runLazyTx' pgExecCtx opTx
@@ -361,10 +362,10 @@ onStart serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
 
           sendCompleted (Just reqId)
 
-    runRemoteGQ :: ExceptT () IO DiffTime
+    runRemoteGQ :: ExceptT () io DiffTime
                 -> Telem.CacheHit -> E.ExecutionCtx -> RequestId -> UserInfo -> [H.Header]
                 -> G.TypedOperationDefinition -> RemoteSchemaInfo
-                -> ExceptT () IO ()
+                -> ExceptT () io ()
     runRemoteGQ timerTot telemCacheHit execCtx reqId userInfo reqHdrs opDef rsi = do
       let telemLocality = Telem.Remote
       telemQueryType <- case G._todType opDef of
@@ -443,7 +444,7 @@ onStart serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
       sendMsgWithMetadata wsConn
         (SMData $ DataMsg opId $ GRHasura $ GQSuccess $ encJToLBS encJson)
 
-    withComplete :: ExceptT () IO () -> ExceptT () IO a
+    withComplete :: ExceptT () io () -> ExceptT () io a
     withComplete action = do
       action
       sendCompleted Nothing
@@ -457,15 +458,15 @@ onStart serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
     liveQOnChange resp = sendMsg wsConn $ SMData $ DataMsg opId $ GRHasura $
       LQ._lqrPayload <$> resp
 
-    catchAndIgnore :: ExceptT () IO () -> IO ()
+    catchAndIgnore :: ExceptT () io () -> io ()
     catchAndIgnore m = void $ runExceptT m
 
 onMessage
-  :: (HasVersion, MonadIO m, UserAuthentication m)
+  :: (HasVersion, MonadIO m, UserAuthentication m, Tracing.HasReporter m)
   => AuthMode
   -> WSServerEnv
   -> WSConn -> BL.ByteString -> m ()
-onMessage authMode serverEnv wsConn msgRaw =
+onMessage authMode serverEnv wsConn msgRaw = Tracing.runTraceT "websocket" do
   case J.eitherDecode msgRaw of
     Left e    -> do
       let err = ConnErrMsg $ "parsing ClientMessage failed: " <> T.pack e
@@ -476,7 +477,7 @@ onMessage authMode serverEnv wsConn msgRaw =
       CMConnInit params -> onConnInit (_wseLogger serverEnv)
                            (_wseHManager serverEnv)
                            wsConn authMode params
-      CMStart startMsg  -> liftIO $ onStart serverEnv wsConn startMsg
+      CMStart startMsg  -> onStart serverEnv wsConn startMsg
       CMStop stopMsg    -> liftIO $ onStop serverEnv wsConn stopMsg
       -- The idea is cleanup will be handled by 'onClose', but...
       -- NOTE: we need to close the websocket connection when we receive the
@@ -616,6 +617,7 @@ createWSServerApp
      , MC.MonadBaseControl IO m
      , LA.Forall (LA.Pure m)
      , UserAuthentication m
+     , Tracing.HasReporter m
      )
   => AuthMode
   -> WSServerEnv

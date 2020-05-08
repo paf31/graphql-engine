@@ -21,6 +21,7 @@ import qualified Database.PG.Query                      as Q
 import qualified Hasura.GraphQL.Execute                 as E
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.Telemetry.Counters       as Telem
+import qualified Hasura.Tracing                         as Tracing
 import qualified Language.GraphQL.Draft.Syntax          as G
 import qualified Network.HTTP.Types                     as HTTP
 
@@ -29,6 +30,7 @@ runGQ
      , MonadIO m
      , MonadError QErr m
      , MonadReader E.ExecutionCtx m
+     , Tracing.MonadTrace m
      )
   => RequestId
   -> UserInfo
@@ -61,6 +63,7 @@ runGQBatched
      , MonadIO m
      , MonadError QErr m
      , MonadReader E.ExecutionCtx m
+     , Tracing.MonadTrace m
      )
   => RequestId
   -> ResponseInternalErrorsConfig

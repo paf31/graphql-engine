@@ -325,7 +325,7 @@ v1QueryHandler query = do
       runQuery pgExecCtx instanceId userInfo schemaCache httpMgr sqlGenCtx (SystemDefined False) query
 
 v1Alpha1GQHandler
-  :: (HasVersion, MonadIO m)
+  :: (HasVersion, MonadIO m, Tracing.MonadTrace m)
   => GH.GQLBatchedReqs GH.GQLQueryText -> Handler m (HttpResponse EncJSON)
 v1Alpha1GQHandler query = do
   userInfo <- asks hcUser
@@ -345,7 +345,7 @@ v1Alpha1GQHandler query = do
   flip runReaderT execCtx $ GH.runGQBatched requestId responseErrorsConfig userInfo reqHeaders query
 
 v1GQHandler
-  :: (HasVersion, MonadIO m)
+  :: (HasVersion, MonadIO m, Tracing.MonadTrace m)
   => GH.GQLBatchedReqs GH.GQLQueryText -> Handler m (HttpResponse EncJSON)
 v1GQHandler = v1Alpha1GQHandler
 

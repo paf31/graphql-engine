@@ -8,12 +8,18 @@ module Hasura.Tracing
   , TraceContext(..)
   , HasReporter(..)
   , TracingMetadata
+  , SuspendedRequest(..)
+  , traceHttpRequest
   ) where
 
 import           Hasura.Prelude
 
 import           Control.Monad.Trans.Control
+import           Data.String
 
+import qualified Data.ByteString             as BS
+import qualified Data.ByteString.Lazy        as BL
+import qualified Network.HTTP.Client         as HTTP
 import qualified System.Random               as Rand
 
 -- | Any additional human-readable key-value pairs relevant
@@ -34,7 +40,7 @@ class Monad m => HasReporter m where
          -> m a
 
   default report :: TraceContext -> String -> m (a, TracingMetadata) -> m a
-  report _ _ = fmap fst
+  report _ name = fmap fst
 
 instance HasReporter m => HasReporter (ReaderT r m) where
   report ctx name = mapReaderT $ report ctx name
@@ -118,3 +124,38 @@ instance MonadTrace m => MonadTrace (ExceptT e m) where
   trace = mapExceptT . trace
   currentContext = lift currentContext
   attachMetadata = lift . attachMetadata
+
+-- | A HTTP request, which can be modified before execution.
+data SuspendedRequest m a = SuspendedRequest HTTP.Request (HTTP.Request -> m a)
+
+traceHttpRequest 
+  :: MonadTrace m 
+  => String 
+  -- ^ human-readable name for this block of code 
+  -> m (SuspendedRequest m a)
+  -- ^ an action which yields the request about to be executed and suspends
+  -- before actually executing it
+  -> m a  
+traceHttpRequest name f = trace name do
+  SuspendedRequest req next <- f
+  case HTTP.requestBody req of
+    HTTP.RequestBodyBS bs ->
+      attachMetadata [("request_body_bytes", show (BS.length bs))]
+    HTTP.RequestBodyLBS bs ->
+      attachMetadata [("request_body_bytes", show (BL.length bs))]
+    HTTP.RequestBodyBuilder len _ -> 
+      attachMetadata [("request_body_bytes", show len)]
+    HTTP.RequestBodyStream len _ ->
+      attachMetadata [("request_body_bytes", show len)]
+    _ -> pure ()
+  TraceContext{..} <- currentContext
+  let tracingHeaders = 
+        [ ("X-Hasura-TraceId", fromString (show tcCurrentTrace))
+        , ("X-Hasura-SpanId", fromString (show tcCurrentSpan))
+        ]
+      req' = req { HTTP.requestHeaders = 
+                     tracingHeaders <> HTTP.requestHeaders req
+                 }
+  next req'
+  
+  

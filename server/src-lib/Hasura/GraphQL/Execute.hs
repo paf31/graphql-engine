@@ -58,6 +58,7 @@ import qualified Hasura.GraphQL.Validate                as VQ
 import qualified Hasura.GraphQL.Validate.Types          as VT
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.Telemetry.Counters       as Telem
+import qualified Hasura.Tracing                         as Tracing
 
 -- The current execution plan of a graphql operation, it is
 -- currently, either local pg execution or a remote execution
@@ -378,6 +379,7 @@ execRemoteGQ
      , MonadIO m
      , MonadError QErr m
      , MonadReader ExecutionCtx m
+     , Tracing.MonadTrace m
      )
   => RequestId
   -> UserInfo
@@ -387,7 +389,7 @@ execRemoteGQ
   -> G.TypedOperationDefinition
   -> m (DiffTime, HttpResponse EncJSON)
   -- ^ Also returns time spent in http request, for telemetry.
-execRemoteGQ reqId userInfo reqHdrs q rsi opDef = do
+execRemoteGQ reqId userInfo reqHdrs q rsi opDef = Tracing.traceHttpRequest (show url) do
   execCtx <- ask
   let logger  = _ecxLogger execCtx
       manager = _ecxHttpManager execCtx
@@ -406,19 +408,20 @@ execRemoteGQ reqId userInfo reqHdrs q rsi opDef = do
       finalHeaders = addDefaultHeaders headers
   initReqE <- liftIO $ try $ HTTP.parseRequest (show url)
   initReq <- either httpThrow pure initReqE
-  let req = initReq
+  let reqBody = J.encode q
+      req = initReq
            { HTTP.method = "POST"
            , HTTP.requestHeaders = finalHeaders
-           , HTTP.requestBody = HTTP.RequestBodyLBS (J.encode q)
+           , HTTP.requestBody = HTTP.RequestBodyLBS reqBody
            , HTTP.responseTimeout = HTTP.responseTimeoutMicro (timeout * 1000000)
            }
-
-  L.unLogger logger $ QueryLog q Nothing reqId
-  (time, res)  <- withElapsedTime $ liftIO $ try $ HTTP.httpLbs req manager
-  resp <- either httpThrow return res
-  let !httpResp = HttpResponse (encJFromLBS $ resp ^. Wreq.responseBody) $ mkSetCookieHeaders resp
-  return (time, httpResp)
-
+  pure $ Tracing.SuspendedRequest req \req' -> do 
+    L.unLogger logger $ QueryLog q Nothing reqId
+    (time, res)  <- withElapsedTime $ liftIO $ try $ HTTP.httpLbs req' manager
+    resp <- either httpThrow return res
+    let !httpResp = HttpResponse (encJFromLBS $ resp ^. Wreq.responseBody) $ mkSetCookieHeaders resp
+    return (time, httpResp)
+    
   where
     RemoteSchemaInfo url hdrConf fwdClientHdrs timeout = rsi
     httpThrow :: (MonadError QErr m) => HTTP.HttpException -> m a
