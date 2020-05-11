@@ -23,6 +23,7 @@ module Hasura.GraphQL.Execute
 import           Control.Exception                      (try)
 import           Control.Lens
 import           Data.Has
+import           Data.String                            (fromString)
 
 import qualified Data.Aeson                             as J
 import qualified Data.HashMap.Strict                    as Map
@@ -389,7 +390,7 @@ execRemoteGQ
   -> G.TypedOperationDefinition
   -> m (DiffTime, HttpResponse EncJSON)
   -- ^ Also returns time spent in http request, for telemetry.
-execRemoteGQ reqId userInfo reqHdrs q rsi opDef = Tracing.traceHttpRequest (show url) do
+execRemoteGQ reqId userInfo reqHdrs q rsi opDef = Tracing.traceHttpRequest (fromString (show url)) do
   execCtx <- ask
   let logger  = _ecxLogger execCtx
       manager = _ecxHttpManager execCtx

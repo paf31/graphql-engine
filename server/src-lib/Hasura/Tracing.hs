@@ -15,7 +15,7 @@ module Hasura.Tracing
 import           Hasura.Prelude
 
 import           Control.Monad.Trans.Control
-import           Data.String
+import           Data.String                 (fromString)
 
 import qualified Data.ByteString             as BS
 import qualified Data.ByteString.Lazy        as BL
@@ -24,7 +24,7 @@ import qualified System.Random               as Rand
 
 -- | Any additional human-readable key-value pairs relevant
 -- to the execution of a block of code.
-type TracingMetadata = [(String, String)]
+type TracingMetadata = [(Text, Text)]
 
 -- | A type class for monads which support some
 -- way to report execution traces.
@@ -32,15 +32,15 @@ class Monad m => HasReporter m where
   -- | Get the current tracer
   report :: TraceContext
          -- ^ the current trace context
-         -> String
+         -> Text
          -- ^ human-readable name for this block of code
          -> m (a, TracingMetadata)
          -- ^ the action whose execution we want to report, returning 
          -- any metadata emitted
          -> m a
 
-  default report :: TraceContext -> String -> m (a, TracingMetadata) -> m a
-  report _ name = fmap fst
+  default report :: TraceContext -> Text -> m (a, TracingMetadata) -> m a
+  report _ _ = fmap fst
 
 instance HasReporter m => HasReporter (ReaderT r m) where
   report ctx name = mapReaderT $ report ctx name
@@ -81,7 +81,7 @@ instance MonadReader r m => MonadReader r (TraceT m) where
 -- | Run an action in the 'TraceT' monad transformer.
 -- 'runTraceT' delimits a new trace with its root span, and the arguments
 -- specify a name and metadata for that span.
-runTraceT :: (HasReporter m, MonadIO m) => String -> TraceT m a -> m a
+runTraceT :: (HasReporter m, MonadIO m) => Text -> TraceT m a -> m a
 runTraceT name tma = do
   ctx <- TraceContext 
            <$> liftIO Rand.randomIO 
@@ -92,7 +92,7 @@ runTraceT name tma = do
 -- | Monads which support tracing. 'TraceT' is the standard example.
 class Monad m => MonadTrace m where
   -- | Trace the execution of a block of code, attaching a human-readable name.
-  trace :: String -> m a -> m a
+  trace :: Text -> m a -> m a
   
   -- | Ask for the current tracing context, so that we can provide it to any
   -- downstream services, e.g. in HTTP headers.
@@ -130,7 +130,7 @@ data SuspendedRequest m a = SuspendedRequest HTTP.Request (HTTP.Request -> m a)
 
 traceHttpRequest 
   :: MonadTrace m 
-  => String 
+  => Text 
   -- ^ human-readable name for this block of code 
   -> m (SuspendedRequest m a)
   -- ^ an action which yields the request about to be executed and suspends
@@ -138,16 +138,14 @@ traceHttpRequest
   -> m a  
 traceHttpRequest name f = trace name do
   SuspendedRequest req next <- f
-  case HTTP.requestBody req of
-    HTTP.RequestBodyBS bs ->
-      attachMetadata [("request_body_bytes", show (BS.length bs))]
-    HTTP.RequestBodyLBS bs ->
-      attachMetadata [("request_body_bytes", show (BL.length bs))]
-    HTTP.RequestBodyBuilder len _ -> 
-      attachMetadata [("request_body_bytes", show len)]
-    HTTP.RequestBodyStream len _ ->
-      attachMetadata [("request_body_bytes", show len)]
-    _ -> pure ()
+  let reqBytes = case HTTP.requestBody req of
+        HTTP.RequestBodyBS bs -> Just (fromIntegral (BS.length bs))
+        HTTP.RequestBodyLBS bs -> Just (BL.length bs)
+        HTTP.RequestBodyBuilder len _ -> Just len
+        HTTP.RequestBodyStream len _ -> Just len
+        _ -> Nothing
+  for_ reqBytes \b ->
+    attachMetadata [("request_body_bytes", fromString (show b))]
   TraceContext{..} <- currentContext
   let tracingHeaders = 
         [ ("X-Hasura-TraceId", fromString (show tcCurrentTrace))

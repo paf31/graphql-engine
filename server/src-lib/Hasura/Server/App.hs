@@ -13,6 +13,7 @@ import           Data.Aeson                             hiding (json)
 import           Data.Either                            (isRight)
 import           Data.Int                               (Int64)
 import           Data.IORef
+import           Data.String                            (fromString)
 import           Data.Time.Clock                        (UTCTime, getCurrentTime)
 import           Data.Time.Clock.POSIX                  (getPOSIXTime)
 import           Network.Mime                           (defaultMimeLookup)
@@ -233,7 +234,7 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
         authMode = scAuthMode serverCtx
         manager = scManager serverCtx
         pathInfo = Wai.rawPathInfo req
-        runTraceT = Tracing.runTraceT (B8.unpack pathInfo)
+        runTraceT = Tracing.runTraceT (fromString (B8.unpack pathInfo))
 
     requestId <- getRequestId headers
 
