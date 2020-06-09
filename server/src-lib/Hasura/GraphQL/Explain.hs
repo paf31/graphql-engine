@@ -29,6 +29,7 @@ import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Validate                as GV
 import qualified Hasura.GraphQL.Validate.SelectionSet   as GV
 import qualified Hasura.SQL.DML                         as S
+import qualified Hasura.Tracing                         as Tracing
 
 data GQLExplain
   = GQLExplain
@@ -86,7 +87,7 @@ getSessVarVal userInfo sessVar =
     sessionVariables = _uiSession userInfo
 
 explainField
-  :: (MonadError QErr m, MonadTx m, HasVersion, MonadIO m)
+  :: (MonadError QErr m, MonadTx m, HasVersion, MonadIO m, Tracing.MonadTrace m)
   => UserInfo
   -> GCtx
   -> SQLGenCtx
@@ -119,15 +120,23 @@ explainField userInfo gCtx sqlGenCtx actionExecuter fld =
     orderByCtx = _gOrdByCtx gCtx
 
 explainGQLQuery
-  :: (MonadError QErr m, MonadIO m,HasVersion)
+  :: ( HasVersion
+     , MonadError QErr m
+     , MonadIO m
+     , Tracing.MonadTrace m
+     , MonadIO tx
+     , MonadTx tx
+     , Tracing.MonadTrace tx
+     )
   => PGExecCtx
+  -> (Q.TxAccess -> tx EncJSON -> m EncJSON)
   -> SchemaCache
   -> SQLGenCtx
   -> Bool
   -> QueryActionExecuter
   -> GQLExplain
   -> m EncJSON
-explainGQLQuery pgExecCtx sc sqlGenCtx enableAL actionExecuter (GQLExplain query userVarsRaw maybeIsRelay) = do
+explainGQLQuery pgExecCtx runInTx sc sqlGenCtx enableAL actionExecuter (GQLExplain query userVarsRaw maybeIsRelay) = do
   userInfo <- mkUserInfo (URBFromSessionVariablesFallback adminRoleName) UAdminSecretSent sessionVariables
   (execPlan, queryReusability) <- runReusabilityT $
     E.getExecPlanPartial userInfo sc queryType enableAL query
@@ -138,15 +147,14 @@ explainGQLQuery pgExecCtx sc sqlGenCtx enableAL actionExecuter (GQLExplain query
       throw400 InvalidParams "only hasura queries can be explained"
   case rootSelSet of
     GV.RQuery selSet ->
-      runInTx $ encJFromJValue . map snd <$>
+      runInTx Q.ReadOnly $ encJFromJValue . map snd <$>
         GV.traverseObjectSelectionSet selSet (explainField userInfo gCtx sqlGenCtx actionExecuter)
     GV.RMutation _ ->
       throw400 InvalidParams "only queries can be explained"
     GV.RSubscription fields -> do
       (plan, _) <- E.getSubsOp pgExecCtx gCtx sqlGenCtx userInfo
                      queryReusability actionExecuter fields
-      runInTx $ encJFromJValue <$> E.explainLiveQueryPlan plan
+      runInTx Q.ReadOnly $ encJFromJValue <$> E.explainLiveQueryPlan plan
   where
     queryType = bool E.QueryHasura E.QueryRelay $ fromMaybe False maybeIsRelay
     sessionVariables = mkSessionVariablesText $ maybe [] Map.toList userVarsRaw
-    runInTx = liftEither <=< liftIO . runExceptT . runLazyTx pgExecCtx Q.ReadOnly

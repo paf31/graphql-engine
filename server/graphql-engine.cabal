@@ -206,6 +206,11 @@ library
 
                      -- scheduled triggers
                      , cron >= 0.6.2
+                     
+                     -- tracing
+                     , http-api-data
+                     , random
+                     , mmorph
 
   exposed-modules:     Control.Arrow.Extended
                      , Control.Arrow.Trans
@@ -253,6 +258,7 @@ library
                      , Hasura.RQL.DDL.Schema
                      , Hasura.EncJSON
                      , Hasura.Session
+                     , Hasura.Tracing
 
                      , Data.Aeson.Ordered
 

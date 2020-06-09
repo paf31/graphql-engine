@@ -26,6 +26,7 @@ import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Validate                as GV
 import qualified Hasura.GraphQL.Validate.SelectionSet   as V
 import qualified Hasura.SQL.DML                         as S
+import qualified Hasura.Tracing                         as Tracing
 
 import           Hasura.EncJSON
 import           Hasura.GraphQL.Context
@@ -196,6 +197,7 @@ convertQuerySelSet
      , Has UserInfo r
      , HasVersion
      , MonadIO m
+     , Tracing.MonadTrace m
      )
   => HTTP.Manager
   -> [N.Header]

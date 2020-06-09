@@ -16,6 +16,7 @@ import           Hasura.Server.Init.Config
 import           Hasura.Server.Utils                    (RequestId)
 import           Hasura.Server.Version                  (HasVersion)
 import           Hasura.Session
+import           Hasura.Tracing                         (MonadTrace, trace)
 
 import qualified Database.PG.Query                      as Q
 import qualified Hasura.GraphQL.Execute                 as E
@@ -29,6 +30,7 @@ runGQ
      , MonadIO m
      , MonadError QErr m
      , MonadReader E.ExecutionCtx m
+     , MonadTrace m
      )
   => RequestId
   -> UserInfo
@@ -63,6 +65,7 @@ runGQBatched
      , MonadIO m
      , MonadError QErr m
      , MonadReader E.ExecutionCtx m
+     , MonadTrace m
      )
   => RequestId
   -> ResponseInternalErrorsConfig
@@ -91,6 +94,7 @@ runHasuraGQ
   :: ( MonadIO m
      , MonadError QErr m
      , MonadReader E.ExecutionCtx m
+     , MonadTrace m
      )
   => RequestId
   -> GQLReqUnparsed
@@ -101,13 +105,13 @@ runHasuraGQ
   -- spent in the PG query; for telemetry.
 runHasuraGQ reqId query userInfo resolvedOp = do
   (E.ExecutionCtx logger _ pgExecCtx _ _ _ _ _) <- ask
-  (telemTimeIO, respE) <- withElapsedTime $ liftIO $ runExceptT $ case resolvedOp of
-    E.ExOpQuery tx genSql -> do
+  (telemTimeIO, respE) <- withElapsedTime . runExceptT $ case resolvedOp of
+    E.ExOpQuery tx genSql -> trace "pg" do
       -- log the generated SQL and the graphql query
       L.unLogger logger $ QueryLog query genSql reqId
       ([],) <$> runLazyTx' pgExecCtx tx
 
-    E.ExOpMutation respHeaders tx -> do
+    E.ExOpMutation respHeaders tx -> trace "pg" do
       -- log the graphql query
       L.unLogger logger $ QueryLog query Nothing reqId
       (respHeaders,) <$> runLazyTx pgExecCtx Q.ReadWrite (withUserInfo userInfo tx)

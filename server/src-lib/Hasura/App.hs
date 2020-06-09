@@ -56,6 +56,7 @@ import           Hasura.Server.SchemaUpdate
 import           Hasura.Server.Telemetry
 import           Hasura.Server.Version
 import           Hasura.Session
+import qualified Hasura.Tracing                       as Tracing
 
 printErrExit :: (MonadIO m) => forall a . String -> m a
 printErrExit = liftIO . (>> exitFailure) . putStrLn
@@ -205,10 +206,11 @@ runHGEServer
      , MonadIO m
      , MonadCatch m
      , MonadStateless IO m
-     , UserAuthentication m
+     , UserAuthentication (Tracing.TraceT m)
      , MetadataApiAuthorization m
      , HttpLog m
      , ConsoleRenderer m
+     , Tracing.HasReporter m
      , LA.Forall (LA.Pure m)
      )
   => ServeOptions impl
@@ -278,7 +280,7 @@ runHGEServer ServeOptions{..} InitCtx{..} initTime = do
     _icHttpManager _icPgPool (getSCFromRef cacheRef) eventEngineCtx
 
   -- start a backgroud thread to handle async actions
-  _asyncActionsThread <- C.forkImmortal "asyncActionsProcessor" logger $ liftIO $
+  _asyncActionsThread <- C.forkImmortal "asyncActionsProcessor" logger $
     asyncActionsProcessor (_scrCache cacheRef) _icPgPool _icHttpManager
 
   -- start a background thread to create new cron events
@@ -404,6 +406,7 @@ execQuery queryBs = do
   buildSchemaCacheStrict
   encJToLBS <$> runQueryM query
 
+instance Tracing.HasReporter AppM
 
 instance HttpLog AppM where
   logHttpError logger userInfoM reqId httpReq req qErr headers =
@@ -414,7 +417,7 @@ instance HttpLog AppM where
     unLogger logger $ mkHttpLog $
       mkHttpAccessLogContext userInfoM reqId httpReq compressedResponse qTime cType headers
 
-instance UserAuthentication AppM where
+instance UserAuthentication (Tracing.TraceT AppM) where
   resolveUserInfo logger manager headers authMode =
     runExceptT $ getUserInfoWithExpTime logger manager headers authMode
 

@@ -56,6 +56,7 @@ import qualified Hasura.GraphQL.Validate.SelectionSet   as VQ
 import qualified Hasura.GraphQL.Validate.Types          as VT
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.Telemetry.Counters       as Telem
+import qualified Hasura.Tracing                         as Tracing
 
 -- The current execution plan of a graphql operation, it is
 -- currently, either local pg execution or a remote execution
@@ -179,7 +180,7 @@ data ExecOp
 type GQExecPlanResolved = GQExecPlan ExecOp
 
 getResolvedExecPlan
-  :: forall m. (HasVersion, MonadError QErr m, MonadIO m)
+  :: forall m. (HasVersion, MonadError QErr m, MonadIO m, Tracing.MonadTrace m)
   => PGExecCtx
   -> EP.PlanCache
   -> UserInfo
@@ -267,7 +268,9 @@ runE ctx sqlGenCtx userInfo action = do
 getQueryOp
   :: ( HasVersion
      , MonadError QErr m
-     , MonadIO m)
+     , MonadIO m
+     , Tracing.MonadTrace m
+     )
   => GCtx
   -> SQLGenCtx
   -> HTTP.Manager
@@ -293,6 +296,7 @@ resolveMutSelSet
      , Has HTTP.Manager r
      , Has [N.Header] r
      , MonadIO m
+     , Tracing.MonadTrace m
      )
   => VQ.ObjectSelectionSet
   -> m (LazyRespTx, N.ResponseHeaders)
@@ -315,7 +319,11 @@ resolveMutSelSet fields = do
       forM aliasedTxs $ \(al, (tx, _)) -> (,) al <$> tx
 
 getMutOp
-  :: (HasVersion, MonadError QErr m, MonadIO m)
+  :: ( HasVersion
+     , MonadError QErr m
+     , MonadIO m
+     , Tracing.MonadTrace m
+     )
   => GCtx
   -> SQLGenCtx
   -> UserInfo
@@ -344,6 +352,7 @@ getSubsOp
   :: ( MonadError QErr m
      , MonadIO m
      , HasVersion
+     , Tracing.MonadTrace m
      )
   => PGExecCtx
   -> GCtx

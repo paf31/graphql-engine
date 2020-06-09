@@ -43,6 +43,7 @@ import qualified Hasura.GraphQL.Validate           as V
 import qualified Hasura.RQL.DML.RemoteJoin         as RR
 import qualified Hasura.RQL.DML.Select             as DS
 import qualified Hasura.SQL.DML                    as S
+import qualified Hasura.Tracing                    as Tracing
 
 data QueryRootFldAST v
   = QRFNode !(DS.AnnSimpleSelG v)
@@ -106,6 +107,7 @@ queryFldToPGAST
      , Has QueryCtxMap r
      , HasVersion
      , MonadIO m
+     , Tracing.MonadTrace m
      )
   => V.Field
   -> RA.QueryActionExecuter
@@ -169,6 +171,7 @@ mutFldToTx
      , Has HTTP.Manager r
      , Has [HTTP.Header] r
      , MonadIO m
+     , Tracing.MonadTrace m
      )
   => V.Field
   -> m (RespTx, HTTP.ResponseHeaders)

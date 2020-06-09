@@ -36,6 +36,7 @@ import           Hasura.SQL.Error
 import           Hasura.SQL.Types
 
 import qualified Hasura.SQL.DML               as S
+import qualified Hasura.Tracing               as Tracing
 
 data PGExecCtx
   = PGExecCtx
@@ -54,7 +55,11 @@ instance (Monoid w, MonadTx m) => MonadTx (WriterT w m) where
   liftTx = lift . liftTx
 instance (MonadTx m) => MonadTx (ValidateT e m) where
   liftTx = lift . liftTx
-
+instance (MonadTx m) => MonadTx (Tracing.TraceT m) where
+  liftTx = lift . liftTx
+instance (MonadTx m) => MonadTx (Tracing.NoReporter m) where
+  liftTx = lift . liftTx
+  
 -- | Like 'Q.TxE', but defers acquiring a Postgres connection until the first execution of 'liftTx'.
 -- If no call to 'liftTx' is ever reached (i.e. a successful result is returned or an error is
 -- raised before ever executing a query), no connection is ever acquired.

@@ -50,6 +50,7 @@ import qualified Hasura.GraphQL.Resolve                 as GR
 import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Validate                as GV
 import qualified Hasura.SQL.DML                         as S
+import qualified Hasura.Tracing                         as Tracing
 
 import           Hasura.Db
 import           Hasura.GraphQL.Resolve.Action
@@ -277,6 +278,7 @@ buildLiveQueryPlan
      , Has SQLGenCtx r
      , MonadIO m
      , HasVersion
+     , Tracing.MonadTrace m
      )
   => PGExecCtx
   -> QueryReusability

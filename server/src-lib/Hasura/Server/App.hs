@@ -6,12 +6,14 @@ module Hasura.Server.App where
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception                      (IOException, try)
 import           Control.Lens                           (view, _2)
+import           Control.Monad.Morph                       (hoist)
 import           Control.Monad.Stateless
 import           Control.Monad.Trans.Control            (MonadBaseControl)
 import           Data.Aeson                             hiding (json)
 import           Data.Either                            (isRight)
 import           Data.Int                               (Int64)
 import           Data.IORef
+import           Data.String                            (fromString)
 import           Data.Time.Clock                        (UTCTime, getCurrentTime)
 import           Data.Time.Clock.POSIX                  (getPOSIXTime)
 import           Network.Mime                           (defaultMimeLookup)
@@ -20,6 +22,8 @@ import           System.FilePath                        (joinPath, takeFileName)
 import           Web.Spock.Core                         ((<//>))
 
 import qualified Control.Concurrent.Async.Lifted.Safe   as LA
+import qualified Control.Monad.Trans.Control            as MTC
+import qualified Data.ByteString.Char8                  as B8
 import qualified Data.ByteString.Lazy                   as BL
 import qualified Data.CaseInsensitive                   as CI
 import qualified Data.HashMap.Strict                    as M
@@ -65,7 +69,7 @@ import qualified Hasura.GraphQL.Transport.HTTP.Protocol as GH
 import qualified Hasura.GraphQL.Transport.WebSocket     as WS
 import qualified Hasura.Logging                         as L
 import qualified Hasura.Server.API.PGDump               as PGD
-
+import qualified Hasura.Tracing                         as Tracing
 
 data SchemaCacheRef
   = SchemaCacheRef
@@ -208,17 +212,27 @@ setHeader (headerName, headerValue) =
   Spock.setHeader (bsToTxt $ CI.original headerName) (bsToTxt headerValue)
 
 -- | Typeclass representing the metadata API authorization effect
-class MetadataApiAuthorization m where
+class Monad m => MetadataApiAuthorization m where
   authorizeMetadataApi :: RQLQuery -> UserInfo -> Handler m ()
 
+instance MetadataApiAuthorization m => MetadataApiAuthorization (Tracing.TraceT m) where
+  authorizeMetadataApi q ui = hoist (hoist lift) $ authorizeMetadataApi q ui
+  
+mapActionT 
+  :: (Monad m, Monad n)
+  => (m (MTC.StT (Spock.ActionCtxT ()) a) -> n (MTC.StT (Spock.ActionCtxT ()) a))
+  -> Spock.ActionT m a
+  -> Spock.ActionT n a
+mapActionT f tma = MTC.restoreT . pure =<< MTC.liftWith \run -> f (run tma)
+
 mkSpockAction
-  :: (HasVersion, MonadIO m, FromJSON a, ToJSON a, UserAuthentication m, HttpLog m)
+  :: (HasVersion, MonadIO m, FromJSON a, ToJSON a, UserAuthentication (Tracing.TraceT m), HttpLog m, Tracing.HasReporter m)
   => ServerCtx
   -> (Bool -> QErr -> Value)
   -- ^ `QErr` JSON encoder function
   -> (QErr -> QErr)
   -- ^ `QErr` modifier
-  -> APIHandler m a
+  -> APIHandler (Tracing.TraceT m) a
   -> Spock.ActionT m ()
 mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
     req <- Spock.request
@@ -227,36 +241,51 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
     let headers = Wai.requestHeaders req
         authMode = scAuthMode serverCtx
         manager = scManager serverCtx
+        pathInfo = Wai.rawPathInfo req
+
+    tracingCtx <- liftIO $ Tracing.extractHttpContext headers
+
+    let runTraceT 
+          :: forall m a
+           . (MonadIO m, Tracing.HasReporter m)
+          => Tracing.TraceT m a
+          -> m a
+        runTraceT = maybe 
+          Tracing.runTraceT
+          Tracing.runTraceTWith
+          tracingCtx
+          (fromString (B8.unpack pathInfo))
 
     requestId <- getRequestId headers
 
-    userInfoE <- fmap fst <$> lift (resolveUserInfo logger manager headers authMode)
-    userInfo  <- either (logErrorAndResp Nothing requestId req (Left reqBody) False headers . qErrModifier)
-                 return userInfoE
+    mapActionT runTraceT do
+      userInfoE <- fmap fst <$> lift (resolveUserInfo logger manager headers authMode)
+      userInfo  <- either (logErrorAndResp Nothing requestId req (Left reqBody) False headers . qErrModifier)
+                   return userInfoE
 
-    let handlerState = HandlerCtx serverCtx userInfo headers requestId
-        includeInternal = shouldIncludeInternal (_uiRole userInfo) $
-                          scResponseInternalErrorsConfig serverCtx
+      let handlerState = HandlerCtx serverCtx userInfo headers requestId
+          includeInternal = shouldIncludeInternal (_uiRole userInfo) $
+                            scResponseInternalErrorsConfig serverCtx
 
-    (serviceTime, (result, q)) <- withElapsedTime $ case apiHandler of
-      AHGet handler -> do
-        res <- lift $ runReaderT (runExceptT handler) handlerState
-        return (res, Nothing)
-      AHPost handler -> do
-        parsedReqE <- runExceptT $ parseBody reqBody
-        parsedReq  <- either (logErrorAndResp (Just userInfo) requestId req (Left reqBody) includeInternal headers . qErrModifier)
-                      return parsedReqE
-        res <- lift $ runReaderT (runExceptT $ handler parsedReq) handlerState
-        return (res, Just parsedReq)
+      (serviceTime, (result, q)) <- withElapsedTime $ case apiHandler of
+        AHGet handler -> do
+          res <- lift $ runReaderT (runExceptT handler) handlerState
+          return (res, Nothing)
+        AHPost handler -> do
+          parsedReqE <- runExceptT $ parseBody reqBody
+          parsedReq  <- either (logErrorAndResp (Just userInfo) requestId req (Left reqBody) includeInternal headers . qErrModifier)
+                        return parsedReqE
+          res <- lift $ runReaderT (runExceptT $ handler parsedReq) handlerState
+          return (res, Just parsedReq)
 
-    -- apply the error modifier
-    let modResult = fmapL qErrModifier result
+      -- apply the error modifier
+      let modResult = fmapL qErrModifier result
 
-    -- log and return result
-    case modResult of
-      Left err  -> let jErr = maybe (Left reqBody) (Right . toJSON) q
-                   in logErrorAndResp (Just userInfo) requestId req jErr includeInternal headers err
-      Right res -> logSuccessAndResp (Just userInfo) requestId req (fmap toJSON q) res (Just (ioWaitTime, serviceTime)) headers
+      -- log and return result
+      case modResult of
+        Left err  -> let jErr = maybe (Left reqBody) (Right . toJSON) q
+                     in logErrorAndResp (Just userInfo) requestId req jErr includeInternal headers err
+        Right res -> logSuccessAndResp (Just userInfo) requestId req (fmap toJSON q) res (Just (ioWaitTime, serviceTime)) headers
 
     where
       logger = scLogger serverCtx
@@ -318,7 +347,7 @@ v1QueryHandler query = do
       runQuery pgExecCtx instanceId userInfo schemaCache httpMgr sqlGenCtx (SystemDefined False) query
 
 v1Alpha1GQHandler
-  :: (HasVersion, MonadIO m)
+  :: (HasVersion, MonadIO m, Tracing.MonadTrace m)
   => E.GraphQLQueryType -> GH.GQLBatchedReqs GH.GQLQueryText -> Handler m (HttpResponse EncJSON)
 v1Alpha1GQHandler queryType query = do
   userInfo <- asks hcUser
@@ -339,17 +368,23 @@ v1Alpha1GQHandler queryType query = do
     GH.runGQBatched requestId responseErrorsConfig userInfo reqHeaders queryType query
 
 v1GQHandler
-  :: (HasVersion, MonadIO m)
+  :: (HasVersion, MonadIO m, Tracing.MonadTrace m)
   => GH.GQLBatchedReqs GH.GQLQueryText
   -> Handler m (HttpResponse EncJSON)
 v1GQHandler = v1Alpha1GQHandler E.QueryHasura
 
 v1GQRelayHandler
-  :: (HasVersion, MonadIO m)
+  :: (HasVersion, MonadIO m, Tracing.MonadTrace m)
   => GH.GQLBatchedReqs GH.GQLQueryText -> Handler m (HttpResponse EncJSON)
 v1GQRelayHandler = v1Alpha1GQHandler E.QueryRelay
 
-gqlExplainHandler :: (HasVersion, MonadIO m) => GE.GQLExplain -> Handler m (HttpResponse EncJSON)
+gqlExplainHandler :: forall m
+   . ( HasVersion
+     , MonadIO m
+     , Tracing.HasReporter m
+     )
+  => GE.GQLExplain
+  -> Handler (Tracing.TraceT m) (HttpResponse EncJSON)
 gqlExplainHandler query = do
   onlyAdmin
   scRef <- scCacheRef . hcServerCtx <$> ask
@@ -357,7 +392,12 @@ gqlExplainHandler query = do
   pgExecCtx <- scPGExecCtx . hcServerCtx <$> ask
   sqlGenCtx <- scSQLGenCtx . hcServerCtx <$> ask
   enableAL <- scEnableAllowlist . hcServerCtx <$> ask
-  res <- GE.explainGQLQuery pgExecCtx sc sqlGenCtx enableAL (restrictActionExecuter "query actions cannot be explained") query
+  let runTx :: Q.TxAccess 
+            -> ReaderT HandlerCtx (Tracing.TraceT (Tracing.NoReporter (LazyTx QErr))) a 
+            -> ExceptT QErr (ReaderT HandlerCtx (Tracing.TraceT m)) a
+      runTx txAccess rttx = ExceptT . ReaderT $ \ctx -> do
+        runExceptT (Tracing.interpTraceT (runLazyTx pgExecCtx txAccess . Tracing.runNoReporter) (runReaderT rttx ctx))
+  res <- GE.explainGQLQuery pgExecCtx runTx sc sqlGenCtx enableAL (restrictActionExecuter "query actions cannot be explained") query
   return $ HttpResponse res []
 
 v1Alpha1PGDumpHandler :: (MonadIO m) => PGD.PGDumpReqBody -> Handler m APIResp
@@ -458,9 +498,10 @@ mkWaiApp
      , MonadStateless IO m
      , ConsoleRenderer m
      , HttpLog m
-     , UserAuthentication m
+     , UserAuthentication (Tracing.TraceT m)
      , MetadataApiAuthorization m
      , LA.Forall (LA.Pure m)
+     , Tracing.HasReporter m
      )
   => Q.TxIsolation
   -> L.Logger L.Hasura
@@ -555,7 +596,15 @@ mkWaiApp isoLevel logger sqlGenCtx enableAL pool ci httpManager mode corsCfg ena
       pure (planCache, cacheRef, view _2 <$> lastUpdateEvent)
 
 httpApp
-  :: (HasVersion, MonadIO m, MonadBaseControl IO m, ConsoleRenderer m, HttpLog m, UserAuthentication m, MetadataApiAuthorization m)
+  :: ( HasVersion
+     , MonadIO m
+     , MonadBaseControl IO m
+     , ConsoleRenderer m
+     , HttpLog m
+     , UserAuthentication (Tracing.TraceT m)
+     , MetadataApiAuthorization m
+     , Tracing.HasReporter m
+     )
   => CorsConfig
   -> ServerCtx
   -> Bool
@@ -657,9 +706,9 @@ httpApp corsCfg serverCtx enableConsole consoleAssetsDir enableTelemetry = do
     logger = scLogger serverCtx
 
     spockAction
-      :: (FromJSON a, ToJSON a, MonadIO m, UserAuthentication m, HttpLog m)
+      :: (FromJSON a, ToJSON a, MonadIO m, UserAuthentication (Tracing.TraceT m), HttpLog m, Tracing.HasReporter m)
       => (Bool -> QErr -> Value)
-      -> (QErr -> QErr) -> APIHandler m a -> Spock.ActionT m ()
+      -> (QErr -> QErr) -> APIHandler (Tracing.TraceT m) a -> Spock.ActionT m ()
     spockAction = mkSpockAction serverCtx
 
 

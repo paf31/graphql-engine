@@ -17,10 +17,11 @@ import           Hasura.Prelude
 import           Control.Concurrent                   (threadDelay)
 import           Control.Exception                    (try)
 import           Control.Lens
+import           Control.Monad.Trans.Control          (MonadBaseControl)
 import           Data.Has
 import           Data.IORef
 
-import qualified Control.Concurrent.Async             as A
+import qualified Control.Concurrent.Async.Lifted.Safe as LA
 import qualified Data.Aeson                           as J
 import qualified Data.Aeson.Casing                    as J
 import qualified Data.Aeson.TH                        as J
@@ -38,6 +39,7 @@ import qualified Network.Wreq                         as Wreq
 import qualified Hasura.GraphQL.Resolve.Select        as GRS
 import qualified Hasura.RQL.DML.RemoteJoin            as RJ
 import qualified Hasura.RQL.DML.Select                as RS
+import qualified Hasura.Tracing                       as Tracing
 
 import           Hasura.EncJSON
 import           Hasura.GraphQL.Resolve.Context
@@ -126,6 +128,7 @@ resolveActionMutation
      , Has SQLGenCtx r
      , Has HTTP.Manager r
      , Has [HTTP.Header] r
+     , Tracing.MonadTrace m
      )
   => Field
   -> ActionMutationExecutionContext
@@ -150,6 +153,7 @@ resolveActionMutationSync
      , Has SQLGenCtx r
      , Has HTTP.Manager r
      , Has [HTTP.Header] r
+     , Tracing.MonadTrace m
      )
   => Field
   -> ActionExecutionContext
@@ -213,6 +217,7 @@ resolveActionQuery
      , Has FieldMap r
      , Has OrdByCtx r
      , Has SQLGenCtx r
+     , Tracing.MonadTrace m
      )
   => Field
   -> ActionExecutionContext
@@ -370,24 +375,30 @@ data ActionLogItem
 -- | Process async actions from hdb_catalog.hdb_action_log table. This functions is executed in a background thread.
 -- See Note [Async action architecture] above
 asyncActionsProcessor
-  :: HasVersion
+  :: forall m void
+   . ( HasVersion
+     , MonadIO m
+     , MonadBaseControl IO m
+     , LA.Forall (LA.Pure m)
+     , Tracing.HasReporter m
+     )
   => IORef (RebuildableSchemaCache Run, SchemaCacheVer)
   -> Q.PGPool
   -> HTTP.Manager
-  -> IO void
+  -> m void
 asyncActionsProcessor cacheRef pgPool httpManager = forever $ do
-  asyncInvocations <- getUndeliveredEvents
-  actionCache <- scActions . lastBuiltSchemaCache . fst <$> readIORef cacheRef
-  A.mapConcurrently_ (callHandler actionCache) asyncInvocations
-  threadDelay (1 * 1000 * 1000)
+  asyncInvocations <- liftIO getUndeliveredEvents
+  actionCache <- scActions . lastBuiltSchemaCache . fst <$> liftIO (readIORef cacheRef)
+  LA.mapConcurrently_ (callHandler actionCache) asyncInvocations
+  liftIO $ threadDelay (1 * 1000 * 1000)
   where
     runTx :: (Monoid a) => Q.TxE QErr a -> IO a
     runTx q = do
       res <- runExceptT $ Q.runTx' pgPool q
       either mempty return res
 
-    callHandler :: ActionCache -> ActionLogItem -> IO ()
-    callHandler actionCache actionLogItem = do
+    callHandler :: ActionCache -> ActionLogItem -> m ()
+    callHandler actionCache actionLogItem = Tracing.runTraceT "async actions processor" do
       let ActionLogItem actionId actionName reqHeaders
             sessionVariables inputPayload = actionLogItem
       case Map.lookup actionName actionCache of
@@ -404,7 +415,7 @@ asyncActionsProcessor cacheRef pgPool httpManager = forever $ do
                        callWebhook httpManager outputType outputFields reqHeaders confHeaders
                          forwardClientHeaders webhookUrl $
                          ActionWebhookPayload actionContext sessionVariables inputPayload
-          case eitherRes of
+          liftIO $ case eitherRes of
             Left e                     -> setError actionId e
             Right (responsePayload, _) -> setCompleted actionId $ J.toJSON responsePayload
 
@@ -458,7 +469,7 @@ asyncActionsProcessor cacheRef pgPool httpManager = forever $ do
     getUndeliveredEvents = runTx undeliveredEventsQuery
 
 callWebhook
-  :: forall m. (HasVersion, MonadIO m, MonadError QErr m)
+  :: forall m. (HasVersion, MonadIO m, MonadError QErr m, Tracing.MonadTrace m)
   => HTTP.Manager
   -> GraphQLType
   -> ActionOutputFields
@@ -473,13 +484,19 @@ callWebhook manager outputType outputFields reqHeaders confHeaders
   resolvedConfHeaders <- makeHeadersFromConf confHeaders
   let clientHeaders = if forwardClientHeaders then mkClientHeadersForward reqHeaders else []
       contentType = ("Content-Type", "application/json")
-      options = wreqOptions manager $
-                -- Using HashMap to avoid duplicate headers between configuration headers
-                -- and client headers where configuration headers are preferred
-                contentType : (Map.toList . Map.fromList) (resolvedConfHeaders <> clientHeaders)
+      -- Using HashMap to avoid duplicate headers between configuration headers
+      -- and client headers where configuration headers are preferred
+      hdrs = contentType : (Map.toList . Map.fromList) (resolvedConfHeaders <> clientHeaders)
       postPayload = J.toJSON actionWebhookPayload
       url = unResolvedWebhook resolvedWebhook
-  httpResponse <- liftIO $ try $ Wreq.postWith options (T.unpack url) postPayload
+  httpResponse <- Tracing.traceHttpRequest url do
+    initReq <- liftIO $ HTTP.parseRequest (T.unpack url)
+    let req = initReq { HTTP.method         = "POST"
+                      , HTTP.requestHeaders = addDefaultHeaders hdrs
+                      , HTTP.requestBody    = HTTP.RequestBodyLBS (J.encode postPayload)
+                      }
+    pure $ Tracing.SuspendedRequest req \req' ->
+      liftIO . try $ HTTP.httpLbs req' manager
   let requestInfo = ActionRequestInfo url postPayload $
                      confHeaders <> toHeadersConf clientHeaders
   case httpResponse of
