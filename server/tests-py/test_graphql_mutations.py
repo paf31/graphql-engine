@@ -1,6 +1,16 @@
 import pytest
 from validate import check_query_f, check_query, get_conf_f
 
+# Marking all tests in this module that server upgrade tests can be run
+# Few of them cannot be run, which will be marked skip_server_upgrade_test
+pytestmark = pytest.mark.allow_server_upgrade_test
+
+usefixtures = pytest.mark.usefixtures
+
+use_mutation_fixtures = usefixtures(
+    'per_class_db_schema_for_mutation_tests',
+    'per_method_db_data_for_mutation_tests'
+)
 
 # Marking all tests in this module that server upgrade tests can be run
 # Few of them cannot be run, which will be marked skip_server_upgrade_test
@@ -202,7 +212,6 @@ def check_query_admin_secret(hge_ctx, f, transport='http'):
     if admin_secret:
         conf['headers']['x-hasura-admin-secret'] = admin_secret
     check_query(hge_ctx, conf, transport, False)
-
 
 @usefixtures('per_class_tests_db_state')
 class TestGraphqlInsertConstraints:
@@ -518,6 +527,9 @@ class TestGraphqlMutationCustomSchema:
     def test_insert_author(self, hge_ctx, transport):
         check_query_f(hge_ctx, self.dir() + '/insert_author.yaml', transport)
 
+    # This test captures a bug in the previous release
+    # Avoiding this test for server upgrades
+    @pytest.mark.skip_server_upgrade_test
     def test_insert_article_author(self, hge_ctx, transport):
         check_query_f(hge_ctx, self.dir() + '/insert_article_author.yaml', transport)
 
