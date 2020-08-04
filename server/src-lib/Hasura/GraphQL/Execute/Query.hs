@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass     #-}
+{-# LANGUAGE DerivingStrategies #-}
+
 module Hasura.GraphQL.Execute.Query
   ( convertQuerySelSet
   , queryOpFromPlan
@@ -5,6 +8,9 @@ module Hasura.GraphQL.Execute.Query
   , GeneratedSqlMap
   , PreparedSql(..)
   , GraphQLQueryType(..)
+  , MonadQueryInstrumentation(..)
+  , ExtractProfile(..)
+  , noProfile
   ) where
 
 import qualified Data.Aeson                             as J
@@ -195,6 +201,28 @@ prepareWithPlan = \case
   where
     currentSession = S.SEPrep 1
 
+newtype ExtractProfile = ExtractProfile 
+  { runExtractProfile :: forall m. (MonadIO m, Tracing.MonadTrace m) => EncJSON -> m EncJSON
+  }
+  
+noProfile :: ExtractProfile
+noProfile = ExtractProfile pure
+
+class Monad m => MonadQueryInstrumentation m where
+  askInstrumentQuery 
+    :: GH.GQLReqParsed 
+    -> m (Q.Query -> Q.Query, ExtractProfile)
+
+  default askInstrumentQuery 
+    :: (m ~ t n, MonadTrans t, MonadQueryInstrumentation n) 
+    => GH.GQLReqParsed 
+    -> m (Q.Query -> Q.Query, ExtractProfile)
+  askInstrumentQuery = lift . askInstrumentQuery
+
+instance MonadQueryInstrumentation m => MonadQueryInstrumentation (ReaderT r m)
+instance MonadQueryInstrumentation m => MonadQueryInstrumentation (ExceptT e m)
+instance MonadQueryInstrumentation m => MonadQueryInstrumentation (Tracing.TraceT m)
+
 convertQuerySelSet
   :: ( MonadError QErr m
      , MonadReader r m
@@ -208,6 +236,7 @@ convertQuerySelSet
      , HasVersion
      , MonadIO m
      , Tracing.MonadTrace m
+     , MonadQueryInstrumentation m
      , MonadIO tx
      , MonadTx tx
      , Tracing.MonadTrace tx
@@ -216,11 +245,13 @@ convertQuerySelSet
   -> HTTP.Manager
   -> [N.Header]
   -> QueryReusability
+  -> GH.GQLReqParsed
   -> V.ObjectSelectionSet
   -> QueryActionExecuter
   -> m (tx EncJSON, Maybe ReusableQueryPlan, GeneratedSqlMap, [R.QueryRootFldUnresolved])
-convertQuerySelSet env manager reqHdrs initialReusability selSet actionRunner = do
+convertQuerySelSet env manager reqHdrs initialReusability queryParsed selSet actionRunner = do
   userInfo <- asks getter
+  (instrumentQuery, ep) <- askInstrumentQuery queryParsed
   (fldPlansAndAst, finalReusability) <- runReusabilityTWith initialReusability $ do
     result <- V.traverseObjectSelectionSet selSet $ \fld -> do
       case V._fName fld of
@@ -232,14 +263,15 @@ convertQuerySelSet env manager reqHdrs initialReusability selSet actionRunner = 
           (q, PlanningSt _ vars prepped) <- flip runStateT initPlanningSt $
             R.traverseQueryRootFldAST prepareWithPlan unresolvedAst
           let (query, remoteJoins) = R.toPGQuery q
-          pure $ (RFPPostgres $ PGPlan query vars prepped remoteJoins, Just unresolvedAst)
+              instQuery = instrumentQuery query
+          pure $ (RFPPostgres $ PGPlan instQuery vars prepped remoteJoins, Just unresolvedAst)
     return $ map (\(alias, (fldPlan, ast)) -> ((G.Alias $ G.Name alias, fldPlan), ast)) result
 
   let varTypes = finalReusability ^? _Reusable
       fldPlans = map fst fldPlansAndAst
       reusablePlan = ReusableQueryPlan <$> varTypes <*> pure fldPlans
   (tx, sql) <- mkCurPlanTx env manager reqHdrs userInfo fldPlans
-  pure (tx, reusablePlan, sql, mapMaybe snd fldPlansAndAst)
+  pure (tx >>= runExtractProfile ep, reusablePlan, sql, mapMaybe snd fldPlansAndAst)
 
 -- use the existing plan and new variables to create a pg query
 queryOpFromPlan

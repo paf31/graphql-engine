@@ -314,6 +314,7 @@ onStart
   , MonadQueryLog m
   , Tracing.MonadTrace m
   , MonadExecuteQuery m
+  , EQ.MonadQueryInstrumentation m
   )
   => Env.Environment -> WSServerEnv -> WSConn -> StartMsg -> m ()
 onStart env serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
@@ -365,7 +366,7 @@ onStart env serverEnv wsConn (StartMsg opId q) = catchAndIgnore $ do
     runHasuraGQ timerTot telemCacheHit reqId query queryParsed userInfo = \case
       E.ExOpQuery opTx genSql asts -> Tracing.trace "pg" $
         execQueryOrMut Telem.Query genSql . fmap snd $
-          Tracing.interpTraceT id $ executeQuery queryParsed asts genSql pgExecCtx Q.ReadOnly opTx
+          Tracing.interpTraceT id $ executeQuery queryParsed asts genSql pgExecCtx opTx
       -- Response headers discarded over websockets
       E.ExOpMutation _ opTx -> Tracing.trace "pg" do
         execQueryOrMut Telem.Mutation Nothing $
@@ -519,6 +520,7 @@ onMessage
      , MonadQueryLog m
      , Tracing.HasReporter m
      , MonadExecuteQuery m
+     , EQ.MonadQueryInstrumentation m
      )
   => Env.Environment
   -> AuthMode
@@ -704,6 +706,7 @@ createWSServerApp
      , MonadQueryLog m
      , Tracing.HasReporter m
      , MonadExecuteQuery m
+     , EQ.MonadQueryInstrumentation m
      )
   => Env.Environment
   -> AuthMode

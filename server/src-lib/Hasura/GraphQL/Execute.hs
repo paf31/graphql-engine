@@ -218,6 +218,7 @@ getResolvedExecPlan
      , MonadError QErr m
      , MonadIO m
      , Tracing.MonadTrace m
+     , EQ.MonadQueryInstrumentation m
      , MonadIO tx
      , MonadTx tx
      , Tracing.MonadTrace tx
@@ -268,7 +269,7 @@ getResolvedExecPlan env logger pgExecCtx planCache userInfo sqlGenCtx
             pure $ ExOpMutation respHeaders tx
           VQ.RQuery selSet -> do
             (queryTx, plan, genSql, asts) <- getQueryOp env logger gCtx sqlGenCtx httpManager reqHeaders userInfo
-                                       queryReusability (allowQueryActionExecuter httpManager reqHeaders) selSet
+                                       queryReusability (allowQueryActionExecuter httpManager reqHeaders) reqParsed selSet
             traverse_ (addPlanToCache . flip EP.RPQuery asts) plan
             return $ ExOpQuery queryTx (Just genSql) asts
           VQ.RSubscription fields -> do
@@ -315,6 +316,7 @@ getQueryOp
      , MonadError QErr m
      , MonadIO m
      , Tracing.MonadTrace m
+     , EQ.MonadQueryInstrumentation m
      , MonadIO tx
      , MonadTx tx
      , Tracing.MonadTrace tx
@@ -328,10 +330,11 @@ getQueryOp
   -> UserInfo
   -> QueryReusability
   -> QueryActionExecuter
+  -> GQLReqParsed
   -> VQ.ObjectSelectionSet
   -> m (tx EncJSON, Maybe EQ.ReusableQueryPlan, EQ.GeneratedSqlMap, [GR.QueryRootFldUnresolved])
-getQueryOp env logger gCtx sqlGenCtx manager reqHdrs userInfo queryReusability actionExecuter selSet =
-  runE logger gCtx sqlGenCtx userInfo $ EQ.convertQuerySelSet env manager reqHdrs queryReusability selSet actionExecuter
+getQueryOp env logger gCtx sqlGenCtx manager reqHdrs userInfo queryReusability actionExecuter query selSet =
+  runE logger gCtx sqlGenCtx userInfo $ EQ.convertQuerySelSet env manager reqHdrs queryReusability query selSet actionExecuter
 
 resolveMutSelSet
   :: ( HasVersion

@@ -46,18 +46,17 @@ class Monad m => MonadExecuteQuery m where
     -> [R.QueryRootFldUnresolved]
     -> Maybe EQ.GeneratedSqlMap
     -> PGExecCtx
-    -> Q.TxAccess
     -> TraceT (LazyTx QErr) EncJSON
     -> TraceT (ExceptT QErr m) (HTTP.ResponseHeaders, EncJSON)
 
 instance MonadExecuteQuery m => MonadExecuteQuery (ReaderT r m) where
-  executeQuery a b c d e f = hoist (hoist lift) $ executeQuery a b c d e f
+  executeQuery a b c d e = hoist (hoist lift) $ executeQuery a b c d e
 
 instance MonadExecuteQuery m => MonadExecuteQuery (ExceptT r m) where
-  executeQuery a b c d e f = hoist (hoist lift) $ executeQuery a b c d e f
+  executeQuery a b c d e = hoist (hoist lift) $ executeQuery a b c d e
 
 instance MonadExecuteQuery m => MonadExecuteQuery (TraceT m) where
-  executeQuery a b c d e f = hoist (hoist lift) $ executeQuery a b c d e f
+  executeQuery a b c d e = hoist (hoist lift) $ executeQuery a b c d e
 
 
 -- | Run (execute) a single GraphQL query
@@ -70,6 +69,7 @@ runGQ
      , MonadQueryLog m
      , MonadTrace m
      , MonadExecuteQuery m
+     , EQ.MonadQueryInstrumentation m
      )
   => Env.Environment
   -> L.Logger L.Hasura
@@ -119,6 +119,7 @@ runGQBatched
      , MonadQueryLog m
      , MonadTrace m
      , MonadExecuteQuery m
+     , EQ.MonadQueryInstrumentation m
      )
   => Env.Environment
   -> L.Logger L.Hasura
@@ -171,7 +172,7 @@ runHasuraGQ reqId (query, queryParsed) userInfo resolvedOp = do
     E.ExOpQuery tx genSql asts -> trace "pg" $ do
       -- log the generated SQL and the graphql query
       logQueryLog logger query genSql reqId
-      Tracing.interpTraceT id $ executeQuery queryParsed asts genSql pgExecCtx Q.ReadOnly tx
+      Tracing.interpTraceT id $ executeQuery queryParsed asts genSql pgExecCtx tx
 
     E.ExOpMutation respHeaders tx -> trace "pg" $ do
       logQueryLog logger query Nothing reqId
