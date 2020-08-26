@@ -313,9 +313,11 @@ execRemoteGQ'
   -> [N.Header]
   -> GQLReqUnparsed
   -> RemoteSchemaInfo
+  -> Maybe (NonEmpty [FieldName])
+  -- ^ the fields we are fetching
   -> G.OperationType
   -> m (DiffTime, [N.Header], BL.ByteString)
-execRemoteGQ' env manager userInfo reqHdrs q rsi opType =  do
+execRemoteGQ' env manager userInfo reqHdrs q rsi pathsMay opType =  do
   when (opType == G.OperationTypeSubscription) $
     throw400 NotSupported "subscription to remote server is not supported"
   confHdrs <- makeHeadersFromConf env hdrConf
@@ -337,6 +339,9 @@ execRemoteGQ' env manager userInfo reqHdrs q rsi opType =  do
            , HTTP.responseTimeout = HTTP.responseTimeoutMicro (timeout * 1000000)
            }
   Tracing.tracedHttpRequest req \req' -> do
+    pathsMay & traverse_ \paths -> do
+      let toPath = T.intercalate "." . map getFieldNameTxt
+      Tracing.attachMetadata [("join_fields", T.intercalate ", " (map toPath (toList paths)))]
     (time, res)  <- withElapsedTime $ liftIO $ try $ HTTP.httpLbs req' manager
     resp <- either httpThrow return res
     pure (time, mkSetCookieHeaders resp, resp ^. Wreq.responseBody)

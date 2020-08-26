@@ -292,6 +292,7 @@ data RemoteJoinField
   = RemoteJoinField
   { _rjfRemoteSchema :: !RemoteSchemaInfo -- ^ The remote schema server info.
   , _rjfAlias        :: !Alias -- ^ Top level alias of the field
+  , _rjfPath         :: !FieldPath -- ^ Path for the remote data in our response
   , _rjfField        :: !(G.Field G.NoFragments Variable) -- ^ The field AST
   , _rjfFieldCall    :: ![G.Name] -- ^ Path to remote join value
   } deriving (Show, Eq)
@@ -325,10 +326,12 @@ traverseQueryResponseJSON rjm =
                                   $ siblingFields
           let siblingFieldArgs = Map.fromList $ siblingFieldArgsVars
               hasuraFieldArgs = flip Map.filterWithKey siblingFieldArgs $ \k _ -> k `elem` hasuraFieldVariables
-          fieldAlias <- pathToAlias (appendPath fieldName path) counter
+              fullPath = appendPath fieldName path
+          fieldAlias <- pathToAlias fullPath counter
           queryField <- fieldCallsToField (inputArgsToMap inputArgs) hasuraFieldArgs selSet fieldAlias fieldCall
           pure $ RemoteJoinField rsi
                                  fieldAlias
+                                 fullPath
                                  queryField
                                  (map fcName $ toList $ NE.tail fieldCall)
           where
@@ -416,8 +419,9 @@ fetchRemoteJoinFields env manager reqHdrs userInfo remoteJoins = do
         gqlReq = fieldsToRequest G.OperationTypeQuery
                                  (map _rjfField batchList)
         gqlReqUnparsed = (GQLQueryText . G.renderExecutableDoc . G.ExecutableDocument . unGQLExecDoc) <$> gqlReq
+        paths = fmap (unFieldPath . _rjfPath) batch
     -- NOTE: discard remote headers (for now):
-    (_, _, respBody) <- execRemoteGQ' env manager userInfo reqHdrs gqlReqUnparsed rsi G.OperationTypeQuery
+    (_, _, respBody) <- execRemoteGQ' env manager userInfo reqHdrs gqlReqUnparsed rsi (Just paths) G.OperationTypeQuery
     case AO.eitherDecode respBody of
       Left e -> throw500 $ "Remote server response is not valid JSON: " <> T.pack e
       Right r -> do
