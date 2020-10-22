@@ -10,6 +10,7 @@ import           Data.Time.Clock.POSIX      (getPOSIXTime)
 import           Hasura.App
 import           Hasura.Logging             (Hasura)
 import           Hasura.Prelude
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.Server.Init
 import           Hasura.Server.Migrate      (downgradeCatalog, fetchMetadataTx)
@@ -87,7 +88,8 @@ runApp env hgeOptions =
     HCExecute -> do
       (InitCtx{..}, _) <- initialiseCtx env hgeOptions
       queryBs <- liftIO BL.getContents
-      result <- execQuery env _icHttpManager _icDefaultSourceConfig _icMetadata queryBs
+      -- TODO: defaultResolveCustomSource ?
+      result <- execQuery env _icHttpManager _icDefaultSourceConfig defaultResolveCustomSource _icMetadata queryBs
       either (printErrJExit ExecuteProcessError) (liftIO . BLC.putStrLn) result
 
     HCDowngrade opts -> do

@@ -51,7 +51,8 @@ import           Hasura.RQL.DDL.Schema.Cache.Fields
 import           Hasura.RQL.DDL.Schema.Cache.Permission
 import           Hasura.RQL.DDL.Schema.Diff
 import           Hasura.RQL.DDL.Schema.Function
-import           Hasura.RQL.DDL.Schema.Source             (fetchPgScalars, resolveSource)
+import           Hasura.RQL.DDL.Schema.Source             (fetchPgScalars, resolveSource,
+                                                           HasResolveCustomSource)
 import           Hasura.RQL.DDL.Schema.Table
 import           Hasura.RQL.Types                         hiding (tmTable)
 import           Hasura.Server.Version                    (HasVersion)
@@ -60,7 +61,7 @@ import           Hasura.SQL.Types
 buildRebuildableSchemaCache
   :: ( HasVersion, MonadIO m, MonadError QErr m
      , HasHttpManager m, HasSQLGenCtx m, MonadMetadata m
-     , HasDefaultSource m
+     , HasDefaultSource m, HasResolveCustomSource m
      )
   => Env.Environment
   -> m RebuildableSchemaCache
@@ -95,7 +96,7 @@ instance (Monad m) => CacheRM (CacheRWT m) where
   askSchemaCache = CacheRWT $ gets (lastBuiltSchemaCache . (^. _1))
 
 instance ( MonadIO m , MonadMetadata m, MonadError QErr m
-         , HasHttpManager m, HasSQLGenCtx m, HasDefaultSource m
+         , HasHttpManager m, HasSQLGenCtx m, HasDefaultSource m, HasResolveCustomSource m
          ) => CacheRWM (CacheRWT m) where
   buildSchemaCacheWithOptions buildReason invalidations metadataModifier = CacheRWT do
     (RebuildableSchemaCache _ invalidationKeys rule, oldInvalidations, resolvedSources) <- get
@@ -127,7 +128,7 @@ buildSchemaCacheRule
   :: ( HasVersion, ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
      , MonadIO m, MonadUnique m, MonadError QErr m
      , MonadReader BuildContext m, HasHttpManager m, HasSQLGenCtx m
-     , HasDefaultSource m, MonadBaseControl IO m
+     , HasDefaultSource m, HasResolveCustomSource m, MonadBaseControl IO m
      )
   => Env.Environment
   -> (Metadata, InvalidationKeys) `arr` SchemaCache
@@ -191,7 +192,7 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
       :: ( ArrowChoice arr, Inc.ArrowCache m arr
          , ArrowWriter (Seq CollectedInfo) arr
          , HasDefaultSource m, MonadIO m, MonadBaseControl IO m
-         , MonadReader BuildContext m
+         , MonadReader BuildContext m, HasResolveCustomSource m
          )
       => ( Inc.Dependency (HashMap SourceName Inc.InvalidationKey)
          , SourceMetadata
@@ -277,7 +278,7 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
       :: ( ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
          , ArrowWriter (Seq CollectedInfo) arr, MonadIO m, MonadBaseControl IO m
          , MonadError QErr m, MonadUnique m, MonadReader BuildContext m
-         , HasHttpManager m, HasSQLGenCtx m, HasDefaultSource m )
+         , HasHttpManager m, HasSQLGenCtx m, HasDefaultSource m, HasResolveCustomSource m )
       => (Metadata, Inc.Dependency InvalidationKeys) `arr` BuildOutputs
     buildAndCollectInfo = proc (metadata, invalidationKeys) -> do
       let Metadata sources remoteSchemas collections allowlists

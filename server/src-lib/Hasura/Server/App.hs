@@ -42,6 +42,7 @@ import           Hasura.EncJSON
 import           Hasura.GraphQL.Logging                    (MonadQueryLog (..))
 import           Hasura.HTTP
 import           Hasura.RQL.DDL.Schema
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.RQL.Types.Run
 import           Hasura.Server.API.Config                  (runGetConfig)
@@ -383,6 +384,7 @@ v1QueryHandler
      , MonadBaseControl IO m
      , Tracing.MonadTrace m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => V1Q.RQLQuery
   -> Handler m (HttpResponse EncJSON)
@@ -394,12 +396,13 @@ v1QueryHandler v1Query = do
   instanceId   <- asks (scInstanceId . hcServerCtx)
   metadata     <- liftIO $ readIORef $ _scrMetadata scRef
   defPgSource  <- asks (scDefaultPgSource . hcServerCtx)
+  rslvCustomSrc <- askResolveCustomSource
   httpMgr      <- asks (scManager . hcServerCtx)
   sqlGenCtx    <- asks (scSQLGenCtx . hcServerCtx)
   env          <- asks (scEnvironment . hcServerCtx)
 
   let sources = scPostgres $ lastBuiltSchemaCache schemaCache
-      runCtx = RunCtx userInfo httpMgr sqlGenCtx defPgSource
+      runCtx = RunCtx userInfo httpMgr sqlGenCtx defPgSource rslvCustomSrc
 
   (sourceName, sourceConfig) <- case M.toList sources of
     []  -> throw400 NotSupported "no postgres source exist"
@@ -430,6 +433,7 @@ v1MetadataHandler
      , MonadMetadataStorage m
      , MonadApiAuthorization m
      , MonadUnique m
+     , HasResolveCustomSource m
      )
   => RQLMetadata -> Handler m (HttpResponse EncJSON)
 v1MetadataHandler request = do
@@ -441,12 +445,13 @@ v1MetadataHandler request = do
   httpMgr      <- asks (scManager . hcServerCtx)
   sqlGenCtx    <- asks (scSQLGenCtx . hcServerCtx)
   defPgSource  <- asks (scDefaultPgSource . hcServerCtx)
+  rslvCustomSrc <- askResolveCustomSource
   env          <- asks (scEnvironment . hcServerCtx)
   instanceId   <- asks (scInstanceId . hcServerCtx)
   logger       <- asks (scLogger . hcServerCtx)
   r <- withSCUpdate scRef instanceId logger $
        second Just <$> runMetadataRequest env userInfo httpMgr sqlGenCtx
-                       defPgSource schemaCache metadata request
+                       defPgSource rslvCustomSrc schemaCache metadata request
   pure $ HttpResponse r []
 
 v2QueryHandler
@@ -456,6 +461,7 @@ v2QueryHandler
      , MonadMetadataStorage m
      , Tracing.MonadTrace m
      , MonadApiAuthorization m
+     , HasResolveCustomSource m
      )
   => QueryWithSource -> Handler m (HttpResponse EncJSON)
 v2QueryHandler request = do
@@ -467,11 +473,12 @@ v2QueryHandler request = do
   httpMgr      <- asks (scManager . hcServerCtx)
   sqlGenCtx    <- asks (scSQLGenCtx . hcServerCtx)
   pgExecCtx    <- asks (scDefaultPgSource . hcServerCtx)
+  rslvCustomSrc <- askResolveCustomSource
   env          <- asks (scEnvironment . hcServerCtx)
   instanceId   <- asks (scInstanceId . hcServerCtx)
   logger       <- asks (scLogger . hcServerCtx)
   r <- withSCUpdate scRef instanceId logger $
-       runQuery env userInfo httpMgr sqlGenCtx pgExecCtx schemaCache metadata request
+       runQuery env userInfo httpMgr sqlGenCtx pgExecCtx rslvCustomSrc schemaCache metadata request
   pure $ HttpResponse r []
 
 v1Alpha1GQHandler
@@ -641,6 +648,7 @@ legacyQueryHandler
      , MonadBaseControl IO m
      , Tracing.MonadTrace m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => TableName -> T.Text -> Object
   -> Handler m (HttpResponse EncJSON)
@@ -691,6 +699,7 @@ mkWaiApp
      , GH.MonadExecuteQuery m
      , EQ.MonadQueryInstrumentation m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => Env.Environment
   -- ^ Set of environment variables for reference in UIs
@@ -803,6 +812,7 @@ httpApp
      , GH.MonadExecuteQuery m
      , EQ.MonadQueryInstrumentation m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => CorsConfig
   -> ServerCtx

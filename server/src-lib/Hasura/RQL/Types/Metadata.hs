@@ -293,7 +293,7 @@ $(deriveJSON (aesonDrop 4 snakeCase) ''SourceCustomConfiguration)
 
 data SourceConfiguration
   = SCDefault -- ^ the default configuraion, to be resolved from --database-url option
-  | SCCustom !SourceCustomConfiguration -- ^ the custom configuration
+  | SCCustom !SourceCustomConfiguration ![SourceCustomConfiguration] -- ^ the custom configuration
   deriving (Show, Eq, Lift, Generic)
 instance Cacheable SourceConfiguration
 
@@ -312,14 +312,17 @@ instance FromJSON SourceMetadata where
     _smTables        <- mapFromL _tmTable <$> o .: "tables"
     _smFunctions     <- mapFromL _fmFunction <$> o .:? "functions" .!= []
     _smConfiguration <- if _smName == defaultSource then pure SCDefault
-                        else SCCustom <$> o .: "configuration"
+                        else SCCustom <$> o .: "configuration" 
+                                      <*> o .:? "read_replicas" .!= []
     pure SourceMetadata{..}
 
 mkSourceMetadata
-  :: SourceName -> UrlConf -> SourceConnSettings -> SourceMetadata
-mkSourceMetadata name urlConf connSettings =
-  SourceMetadata name mempty mempty $ SCCustom $
-  SourceCustomConfiguration urlConf connSettings
+  :: SourceName -> UrlConf -> [UrlConf] -> SourceConnSettings -> SourceMetadata
+mkSourceMetadata name urlConf replicas connSettings =
+  SourceMetadata name mempty mempty $ 
+    SCCustom
+      (SourceCustomConfiguration urlConf connSettings)
+      (map (`SourceCustomConfiguration` connSettings) replicas)
 
 type Sources = M.HashMap SourceName SourceMetadata
 
@@ -421,7 +424,10 @@ metadataToOrdJSON ( Metadata
           functionsPair = listToMaybeOrdPair "functions" functionMetadataToOrdJSON $ M.elems _smFunctions
           configurationPair = case _smConfiguration of
             SCDefault     -> []
-            SCCustom conf -> [("configuration", AO.toOrdered conf)]
+            SCCustom conf [] -> [("configuration", AO.toOrdered conf)]
+            SCCustom conf replicas -> [ ("configuration", AO.toOrdered conf)
+                                      , ("read_replicas", AO.toOrdered replicas)
+                                      ]
       in AO.object $ [sourceNamePair, tablesPair] <> maybeToList functionsPair <> configurationPair
 
     tableMetaToOrdJSON :: TableMetadata -> AO.Value

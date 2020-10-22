@@ -61,6 +61,7 @@ import           Hasura.GraphQL.Transport.HTTP.Protocol    (toParsed)
 import           Hasura.Logging
 import           Hasura.Prelude
 import           Hasura.RQL.DDL.Schema.Cache
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.RQL.Types.Run
 import           Hasura.Server.API.Query
@@ -231,8 +232,9 @@ initialiseCtx env (HGEOptionsG rci metadataDbUrl hgeCmd) = do
 
   let defSourceConfig = PGSourceConfig (mkPGExecCtx Q.Serializable pool) connInfo
 
+  -- TODO: is defaultResolveCustomSource okay here?
   schemaCacheE <- runExceptT
-    $ peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx defSourceConfig) metadata
+    $ peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx defSourceConfig defaultResolveCustomSource) metadata
     $ buildRebuildableSchemaCache env
 
   schemaCache <- fmap fst $ onLeft schemaCacheE $ \err -> do
@@ -336,6 +338,7 @@ runHGEServer
      , Tracing.HasReporter m
      , MonadQueryInstrumentation m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => Env.Environment
   -> ServeOptions impl
@@ -367,6 +370,8 @@ runHGEServer env ServeOptions{..} InitCtx{..} maybeCustomPgSource initTime
       Loggers loggerCtx logger _ = _icLoggers
       defaultPgSource = fromMaybe _icDefaultSourceConfig maybeCustomPgSource
       SchemaSyncCtx schemaSyncListenerThread schemaSyncEventRef = schemaSyncCtx
+
+  rslvCustomSrc <- askResolveCustomSource
 
   authModeRes <- runExceptT $ setupAuthMode soAdminSecret soAuthHook soJwtSecret soUnAuthRole
                               _icHttpManager logger
@@ -405,7 +410,7 @@ runHGEServer env ServeOptions{..} InitCtx{..} maybeCustomPgSource initTime
   -- start background thread for schema sync event processing
   schemaSyncProcessorThread <-
     startSchemaSyncProcessorThread sqlGenCtx
-    defaultPgSource logger _icHttpManager schemaSyncEventRef cacheRef _icInstanceId
+    defaultPgSource rslvCustomSrc logger _icHttpManager schemaSyncEventRef cacheRef _icInstanceId
 
   let
     maxEvThrds    = fromMaybe defaultMaxEventThreads soEventsHttpPoolSize
@@ -631,14 +636,15 @@ ourIdleGC (Logger logger) idleInterval minGCInterval maxNoGCInterval =
 runAsAdmin
   :: (MonadIO m)
   => PGSourceConfig
+  -> ResolveCustomSource
   -> SQLGenCtx
   -> HTTP.Manager
   -> Metadata
   -> MetadataRun m a
   -> m (Either QErr a)
-runAsAdmin defPgSource sqlGenCtx httpManager metadata m =
+runAsAdmin defPgSource rslvCustomSrc sqlGenCtx httpManager metadata m =
   fmap (fmap fst) $ runExceptT $
-    peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx defPgSource) metadata m
+    peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx defPgSource rslvCustomSrc) metadata m
 
 execQuery
   :: ( HasVersion
@@ -647,14 +653,15 @@ execQuery
   => Env.Environment
   -> HTTP.Manager
   -> PGSourceConfig
+  -> ResolveCustomSource
   -> Metadata
   -> BLC.ByteString
   -> m (Either QErr BLC.ByteString)
-execQuery env httpManager defPgSource metadata queryBs = runExceptT do
+execQuery env httpManager defPgSource rslvCustomSrc metadata queryBs = runExceptT do
   QueryWithSource source query <- case A.decode queryBs of
     Just jVal -> decodeValue jVal
     Nothing   -> throw400 InvalidJSON "invalid json"
-  let runCtx = RunCtx adminUserInfo httpManager (SQLGenCtx False) defPgSource
+  let runCtx = RunCtx adminUserInfo httpManager (SQLGenCtx False) defPgSource rslvCustomSrc
       actionM = do
         buildSchemaCacheStrict noMetadataModify
         encJToLBS <$> runQueryM env source query
@@ -674,6 +681,9 @@ execQuery env httpManager defPgSource metadata queryBs = runExceptT do
           & fmap fst
 
 instance Tracing.HasReporter ServerAppM
+
+instance HasResolveCustomSource ServerAppM where
+  askResolveCustomSource = pure defaultResolveCustomSource
 
 instance MonadQueryInstrumentation ServerAppM where
   askInstrumentQuery _ = pure (id, noProfile)

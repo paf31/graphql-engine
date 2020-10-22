@@ -92,6 +92,7 @@ data AddPgSource
   { _apsName                   :: !SourceName
   , _apsDatabaseUrl            :: !UrlConf
   , _apsConnectionPoolSettings :: !SourceConnSettings
+  , _apsReadReplicas           :: ![UrlConf]
   } deriving (Show, Eq, Lift)
 $(deriveToJSON (aesonDrop 4 snakeCase) ''AddPgSource)
 
@@ -101,6 +102,7 @@ instance FromJSON AddPgSource where
       <$> o .: "name"
       <*> o .: "database_url"
       <*> o .:? "connection_pool_settings" .!= defaultConnSettings
+      <*> o .:? "read_replicas" .!= []
 
 data DropPgSource
   = DropPgSource

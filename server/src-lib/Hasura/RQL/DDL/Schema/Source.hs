@@ -8,6 +8,7 @@ import           Hasura.RQL.DDL.Deps
 import           Hasura.RQL.DDL.Schema.Common
 import           Hasura.RQL.Types
 import           Hasura.SQL.Types
+import           Hasura.Tracing
 
 import           Data.Aeson
 
@@ -16,22 +17,46 @@ import qualified Data.HashMap.Strict          as HM
 import qualified Data.HashSet                 as S
 import qualified Database.PG.Query            as Q
 
+type ResolveCustomSource =
+     Env.Environment 
+  -> SourceCustomConfiguration
+  -> [SourceCustomConfiguration]
+  -> IO (Either QErr PGSourceConfig)
+
+class Monad m => HasResolveCustomSource m where
+  askResolveCustomSource :: m ResolveCustomSource
+                      
+  -- A default for monad transformer instances
+  default askResolveCustomSource
+    :: (m ~ t n, MonadTrans t, HasResolveCustomSource n)
+    => m ResolveCustomSource
+  askResolveCustomSource = lift askResolveCustomSource
+  
+instance HasResolveCustomSource m => HasResolveCustomSource (ReaderT r m)
+instance HasResolveCustomSource m => HasResolveCustomSource (ExceptT e m)
+instance HasResolveCustomSource m => HasResolveCustomSource (TraceT m)
+  
+defaultResolveCustomSource :: ResolveCustomSource
+defaultResolveCustomSource env (SourceCustomConfiguration urlConf connSettings) _replicas = runExceptT do
+  let SourceConnSettings maxConns idleTimeout retries = connSettings
+  urlText <- resolveUrlConf env urlConf
+  let connInfo = Q.ConnInfo retries $ Q.CDDatabaseURI $ txtToBs urlText
+      connParams = Q.defaultConnParams{ Q.cpIdleTime = idleTimeout
+                                      , Q.cpConns = maxConns
+                                      }
+  pgPool <- liftIO $ Q.initPGPool connInfo connParams (\_ -> pure ()) -- FIXME? Pg logger
+  let pgExecCtx = mkPGExecCtx Q.ReadCommitted pgPool
+  pure $ PGSourceConfig pgExecCtx connInfo
+
 resolveSource
-  :: (MonadIO m, MonadBaseControl IO m, HasDefaultSource m)
+  :: (MonadIO m, MonadBaseControl IO m, HasDefaultSource m, HasResolveCustomSource m)
   => Env.Environment -> SourceMetadata -> m (Either QErr ResolvedSource)
 resolveSource env (SourceMetadata _ tables functions config) = runExceptT do
   sourceConfig <- case config of
     SCDefault -> askDefaultSource
-    SCCustom (SourceCustomConfiguration urlConf connSettings) -> do
-      let SourceConnSettings maxConns idleTimeout retries = connSettings
-      urlText <- resolveUrlConf env urlConf
-      let connInfo = Q.ConnInfo retries $ Q.CDDatabaseURI $ txtToBs urlText
-          connParams = Q.defaultConnParams{ Q.cpIdleTime = idleTimeout
-                                          , Q.cpConns = maxConns
-                                          }
-      pgPool <- liftIO $ Q.initPGPool connInfo connParams (\_ -> pure ()) -- FIXME? Pg logger
-      let pgExecCtx = mkPGExecCtx Q.ReadCommitted pgPool
-      pure $ PGSourceConfig pgExecCtx connInfo
+    SCCustom primary replicas -> ExceptT do
+      resolve <- askResolveCustomSource
+      liftIO $ resolve env primary replicas
 
   (tablesMeta, functionsMeta, pgScalars) <- runLazyTx (_pscExecCtx sourceConfig) Q.ReadWrite $ do
     initSource
@@ -135,13 +160,13 @@ fetchPgScalars =
 runAddPgSource
   :: (MonadError QErr m, CacheRWM m)
   => AddPgSource -> m EncJSON
-runAddPgSource (AddPgSource name url connSettings) = do
+runAddPgSource (AddPgSource name url connSettings replicas) = do
   sources <- scPostgres <$> askSchemaCache
   onJust (HM.lookup name sources) $ const $
     throw400 AlreadyExists $ "postgres source with name " <> name <<> " already exists"
   buildSchemaCacheFor (MOSource name)
     $ MetadataModifier
-    $ metaSources %~ HM.insert name (mkSourceMetadata name url connSettings)
+    $ metaSources %~ HM.insert name (mkSourceMetadata name url replicas connSettings)
   pure successMsg
 
 runDropPgSource

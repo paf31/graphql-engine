@@ -33,6 +33,7 @@ import           Hasura.RQL.DDL.RemoteRelationship
 import           Hasura.RQL.DDL.RemoteSchema
 import           Hasura.RQL.DDL.ScheduledTrigger
 import           Hasura.RQL.DDL.Schema
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.DML.Count
 import           Hasura.RQL.DML.Delete
 import           Hasura.RQL.DML.Insert
@@ -77,6 +78,7 @@ newtype Run m a = Run {unRun :: BaseRunT (LazyTxT QErr m) a}
            , HasHttpManager
            , HasSQLGenCtx
            , HasDefaultSource
+           , HasResolveCustomSource
            )
 
 deriving instance (MonadIO m, MonadBaseControl IO m) => MonadBaseControl IO (Run m)

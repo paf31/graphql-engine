@@ -20,6 +20,8 @@ import           Control.Monad.Unique
 
 import qualified Hasura.Incremental           as Inc
 
+import           Hasura.RQL.DDL.Schema.Source (HasResolveCustomSource(..), 
+                                               ResolveCustomSource)
 import           Hasura.RQL.Types
 import           Hasura.SQL.Types
 
@@ -127,6 +129,7 @@ data CacheBuildParams
   { _cbpManager         :: !HTTP.Manager
   , _cbpSqlGenCtx       :: !SQLGenCtx
   , _cbpDefaultPgConfig :: !PGSourceConfig
+  , _cbpRslvCustomSrc   :: !ResolveCustomSource
   }
 
 -- | The monad in which @'RebuildableSchemaCache' is being run
@@ -150,19 +153,24 @@ instance HasSQLGenCtx CacheBuild where
 instance HasDefaultSource CacheBuild where
   askDefaultSource = asks _cbpDefaultPgConfig
 
+instance HasResolveCustomSource CacheBuild where
+  askResolveCustomSource = asks _cbpRslvCustomSrc
+
 runCacheBuild
   :: ( MonadIO m
      , MonadError QErr m
      , HasHttpManager m
      , HasSQLGenCtx m
      , HasDefaultSource m
+     , HasResolveCustomSource m
      )
   => CacheBuild a -> m a
 runCacheBuild (CacheBuild m) = do
   httpManager <- askHttpManager
   sqlGenCtx   <- askSQLGenCtx
   defPgSource <- askDefaultSource
-  let params = CacheBuildParams httpManager sqlGenCtx defPgSource
+  rslvCustomSrc <- askResolveCustomSource
+  let params = CacheBuildParams httpManager sqlGenCtx defPgSource rslvCustomSrc
   liftEitherM $ liftIO $ runExceptT (runReaderT m params)
 
 data RebuildableSchemaCache
