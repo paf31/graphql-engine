@@ -311,6 +311,7 @@ data SourceMetadata
   , _smTables        :: !Tables
   , _smFunctions     :: !Functions
   , _smConfiguration :: !SourceConfiguration
+  , _smReplicas      :: ![SourceConfiguration]
   } deriving (Show, Eq, Lift, Generic)
 instance Cacheable SourceMetadata
 $(makeLenses ''SourceMetadata)
@@ -320,12 +321,15 @@ instance FromJSON SourceMetadata where
     _smTables        <- mapFromL _tmTable <$> o .: "tables"
     _smFunctions     <- mapFromL _fmFunction <$> o .:? "functions" .!= []
     _smConfiguration <- o .: "configuration"
+    _smReplicas      <- o .:? "read_replicas" .!= []
     pure SourceMetadata{..}
 
 mkSourceMetadata
   :: SourceName -> UrlConf -> SourceConnSettings -> SourceMetadata
 mkSourceMetadata name urlConf connSettings =
-  SourceMetadata name mempty mempty $ SourceConfiguration urlConf connSettings
+  SourceMetadata name mempty mempty 
+    (SourceConfiguration urlConf connSettings)
+    mempty
 
 type Sources = M.HashMap SourceName SourceMetadata
 
@@ -464,7 +468,8 @@ metadataToOrdJSON ( Metadata
           tablesPair = ("tables", AO.array $ map tableMetaToOrdJSON $ M.elems _smTables)
           functionsPair = listToMaybeOrdPair "functions" functionMetadataToOrdJSON $ M.elems _smFunctions
           configurationPair = [("configuration", AO.toOrdered _smConfiguration)]
-      in AO.object $ [sourceNamePair, tablesPair] <> maybeToList functionsPair <> configurationPair
+          replicasPair = [("read_replicas", AO.toOrdered _smReplicas) | not (null _smReplicas)]
+      in AO.object $ [sourceNamePair, tablesPair] <> maybeToList functionsPair <> configurationPair <> replicasPair
 
     tableMetaToOrdJSON :: TableMetadata -> AO.Value
     tableMetaToOrdJSON ( TableMetadata

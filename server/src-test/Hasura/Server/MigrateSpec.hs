@@ -18,6 +18,7 @@ import qualified Database.PG.Query              as Q
 
 import           Hasura.RQL.DDL.Metadata        (ClearMetadata (..), runClearMetadata)
 import           Hasura.RQL.DDL.Schema
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.Server.API.PGDump
 import           Hasura.Server.Init             (DowngradeOptions (..))
@@ -41,7 +42,7 @@ instance (MonadBase IO m) => CacheRM (CacheRefT m) where
   askSchemaCache = CacheRefT (fmap lastBuiltSchemaCache . readMVar)
 
 instance (MonadIO m, MonadBaseControl IO m, MonadTx m, MonadMetadata m
-         , HasHttpManager m, HasSQLGenCtx m) => CacheRWM (CacheRefT m) where
+         , HasHttpManager m, HasSQLGenCtx m, HasResolveCustomSource m) => CacheRWM (CacheRefT m) where
   buildSchemaCacheWithOptions reason invalidations metadataModifier = CacheRefT $ flip modifyMVar \schemaCache -> do
     ((), cache, _) <- runCacheRWT schemaCache (buildSchemaCacheWithOptions reason invalidations metadataModifier)
     pure (cache, ())

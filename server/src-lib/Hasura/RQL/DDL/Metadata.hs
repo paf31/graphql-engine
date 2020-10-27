@@ -69,7 +69,8 @@ runClearMetadata _ = do
       Nothing -> emptyMetadata
       Just defaultSourceMetadata ->
         let emptyDefaultSource = SourceMetadata defaultSource mempty mempty
-                                 $ _smConfiguration defaultSourceMetadata
+                                   (_smConfiguration defaultSourceMetadata)
+                                   (_smReplicas defaultSourceMetadata)
         in emptyMetadata
            & metaSources %~ HM.insert defaultSource emptyDefaultSource
   pure successMsg
@@ -405,7 +406,7 @@ fetchMetadataFromHdbTables defaultSourceConfig = liftTx do
 
   let tableMetadatas = mapFromL _tmTable $ HM.elems postRelMap
       sources = HM.singleton defaultSource $
-                SourceMetadata defaultSource tableMetadatas functions defaultSourceConfig
+                SourceMetadata defaultSource tableMetadatas functions defaultSourceConfig [] {- TODO: not sure what to do here -}
   pure $ Metadata sources remoteSchemas collections
                   allowlist customTypes actions cronTriggers
 

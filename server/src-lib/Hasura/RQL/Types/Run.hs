@@ -22,6 +22,7 @@ import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Control.Monad.Unique
 import           Data.Aeson
 
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import qualified Hasura.Tracing              as Tracing
 
@@ -30,6 +31,7 @@ data RunCtx
   { _rcUserInfo  :: !UserInfo
   , _rcHttpMgr   :: !HTTP.Manager
   , _rcSqlGenCtx :: !SQLGenCtx
+  , _rcRslvCustomSrc   :: !ResolveCustomSource
   }
 
 newtype BaseRunT m a
@@ -58,6 +60,9 @@ instance (Monad m) => MonadMetadata (BaseRunT m) where
   fetchMetadata = get
   updateMetadata = put
 
+instance (Monad m) => HasResolveCustomSource (BaseRunT m) where
+  askResolveCustomSource = asks _rcRslvCustomSrc
+    
 runBaseRunT :: RunCtx -> Metadata -> BaseRunT m a -> m (a, Metadata)
 runBaseRunT runCtx metadata (BaseRunT m) =
   runStateT (runReaderT m runCtx) metadata
@@ -73,6 +78,7 @@ newtype MetadataRun m a
            , UserInfoM
            , HasHttpManager
            , HasSQLGenCtx
+           , HasResolveCustomSource
            )
 
 runInMetadataRun :: (Monad m) => MetadataStorageT m a -> MetadataRun m a
@@ -117,6 +123,7 @@ newtype QueryRun a
            , UserInfoM
            , HasHttpManager
            , HasSQLGenCtx
+           , HasResolveCustomSource
            )
 
 peelQueryRun

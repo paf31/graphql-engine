@@ -218,7 +218,7 @@ migrateMetadataStorageCatalog env connParams logger pgLogger databaseUrlM
         Just metadata -> pure (migrationResult, metadata)
         Nothing -> do
           let defaultSourceMetadata =
-                SourceMetadata defaultSource mempty mempty defaultSourceConfig
+                SourceMetadata defaultSource mempty mempty defaultSourceConfig {- TODO: -} []
               defaultMetadata =
                 emptyMetadata{_metaSources = HM.singleton defaultSource defaultSourceMetadata}
           liftTx $ setMetadataTx defaultMetadata

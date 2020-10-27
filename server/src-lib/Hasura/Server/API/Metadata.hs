@@ -146,15 +146,16 @@ runMetadataRequest
   -> UserInfo
   -> HTTP.Manager
   -> SQLGenCtx
+  -> ResolveCustomSource
   -> RebuildableSchemaCache
   -> Metadata
   -> RQLMetadata
   -> m (EncJSON, MetadataStateResult)
-runMetadataRequest env userInfo httpManager sqlGenCtx schemaCache metadata request = do
+runMetadataRequest env userInfo httpManager sqlGenCtx srcResolver schemaCache metadata request = do
   ((r, modSchemaCache, cacheInvalidations), modMetadata) <-
     runMetadataRequestM env request
     & runCacheRWT schemaCache
-    & peelMetadataRun (RunCtx userInfo httpManager sqlGenCtx) metadata
+    & peelMetadataRun (RunCtx userInfo httpManager sqlGenCtx srcResolver) metadata
     & runExceptT
     & liftEitherM
   pure (r, MetadataStateResult modSchemaCache cacheInvalidations modMetadata)

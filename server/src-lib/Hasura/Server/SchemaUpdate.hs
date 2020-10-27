@@ -20,6 +20,7 @@ import           Hasura.Class
 import           Hasura.Logging
 import           Hasura.Prelude
 import           Hasura.RQL.DDL.Schema          (runCacheRWT)
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.RQL.Types.Run
 import           Hasura.Server.App              (SchemaCacheRef (..), updateStateRefs)
@@ -129,17 +130,18 @@ startSchemaSyncListenerThread defPgSource logger instanceId = do
 startSchemaSyncProcessorThread
   :: (C.ForkableMonadIO m, MonadMetadataStorage m)
   => SQLGenCtx
+  -> ResolveCustomSource
   -> Logger Hasura
   -> HTTP.Manager
   -> SchemaSyncEventRef
   -> SchemaCacheRef
   -> InstanceId
   -> m Immortal.Thread
-startSchemaSyncProcessorThread sqlGenCtx logger httpMgr
+startSchemaSyncProcessorThread sqlGenCtx srcResolver logger httpMgr
   schemaSyncEventRef cacheRef instanceId = do
   -- Start processor thread
   processorThread <- C.forkImmortal "SchemeUpdate.processor" logger $
-                     processor sqlGenCtx logger httpMgr schemaSyncEventRef cacheRef instanceId
+                     processor sqlGenCtx srcResolver logger httpMgr schemaSyncEventRef cacheRef instanceId
   logThreadStarted logger instanceId TTProcessor processorThread
   pure processorThread
 
@@ -183,13 +185,14 @@ listener defPgSource logger schemaSyncEventRef =
 processor
   :: forall m void. (C.ForkableMonadIO m, MonadMetadataStorage m)
   => SQLGenCtx
+  -> ResolveCustomSource
   -> Logger Hasura
   -> HTTP.Manager
   -> SchemaSyncEventRef
   -> SchemaCacheRef
   -> InstanceId
   -> m void
-processor sqlGenCtx logger httpMgr schemaSyncEventRef
+processor sqlGenCtx srcResolver logger httpMgr schemaSyncEventRef
   cacheRef instanceId =
   -- Never exits
   forever $ do
@@ -200,7 +203,7 @@ processor sqlGenCtx logger httpMgr schemaSyncEventRef
       Left e -> logError logger threadType $ TEPayloadParse $ qeError e
       Right (SchemaSyncEventProcessResult shouldReload invalidations) ->
         when shouldReload $
-          refreshSchemaCache sqlGenCtx logger httpMgr cacheRef invalidations
+          refreshSchemaCache sqlGenCtx srcResolver logger httpMgr cacheRef invalidations
             threadType "schema cache reloaded"
   where
     -- checks if there is an event
@@ -220,13 +223,14 @@ refreshSchemaCache
      , MonadBaseControl IO m
      )
   => SQLGenCtx
+  -> ResolveCustomSource
   -> Logger Hasura
   -> HTTP.Manager
   -> SchemaCacheRef
   -> CacheInvalidations
   -> ThreadType
   -> T.Text -> m ()
-refreshSchemaCache sqlGenCtx logger httpManager cacheRef invalidations threadType msg = do
+refreshSchemaCache sqlGenCtx srcResolver logger httpManager cacheRef invalidations threadType msg = do
   -- Reload schema cache from catalog
   resE <- runExceptT $ withRefUpdate $ do
     rebuildableCache <- fst <$> liftIO (readIORef $ _scrCache cacheRef)
@@ -242,7 +246,7 @@ refreshSchemaCache sqlGenCtx logger httpManager cacheRef invalidations threadTyp
     Left e   -> logError logger threadType $ TEQueryError e
     Right () -> logInfo logger threadType $ object ["message" .= msg]
  where
-  runCtx = RunCtx adminUserInfo httpManager sqlGenCtx
+  runCtx = RunCtx adminUserInfo httpManager sqlGenCtx srcResolver
 
   withRefUpdate action =
     withMVarMasked (_scrLock cacheRef) $ \() -> do

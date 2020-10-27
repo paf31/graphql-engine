@@ -20,6 +20,7 @@ import           Control.Monad.Unique
 
 import qualified Hasura.Incremental           as Inc
 
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.SQL.Types
 
@@ -124,8 +125,9 @@ $(makeLenses ''BuildOutputs)
 -- | Parameters required for schema cache build
 data CacheBuildParams
   = CacheBuildParams
-  { _cbpManager   :: !HTTP.Manager
-  , _cbpSqlGenCtx :: !SQLGenCtx
+  { _cbpManager       :: !HTTP.Manager
+  , _cbpSqlGenCtx     :: !SQLGenCtx
+  , _cbpRslvCustomSrc :: !ResolveCustomSource
   }
 
 -- | The monad in which @'RebuildableSchemaCache' is being run
@@ -145,18 +147,23 @@ instance HasHttpManager CacheBuild where
 
 instance HasSQLGenCtx CacheBuild where
   askSQLGenCtx = asks _cbpSqlGenCtx
+  
+instance HasResolveCustomSource CacheBuild where
+  askResolveCustomSource = asks _cbpRslvCustomSrc
 
 runCacheBuild
   :: ( MonadIO m
      , MonadError QErr m
      , HasHttpManager m
      , HasSQLGenCtx m
+     , HasResolveCustomSource m
      )
   => CacheBuild a -> m a
 runCacheBuild (CacheBuild m) = do
   httpManager <- askHttpManager
   sqlGenCtx   <- askSQLGenCtx
-  let params = CacheBuildParams httpManager sqlGenCtx
+  rslvCustomSrc <- askResolveCustomSource
+  let params = CacheBuildParams httpManager sqlGenCtx rslvCustomSrc
   liftEitherM $ liftIO $ runExceptT (runReaderT m params)
 
 data RebuildableSchemaCache

@@ -8,18 +8,35 @@ import           Hasura.RQL.DDL.Deps
 import           Hasura.RQL.DDL.Schema.Common
 import           Hasura.RQL.Types
 import           Hasura.SQL.Types
+import           Hasura.Tracing
 
 import qualified Data.Environment             as Env
 import qualified Data.HashMap.Strict          as HM
 import qualified Data.HashSet                 as S
 import qualified Database.PG.Query            as Q
 
-resolveSource
-  :: (MonadIO m, MonadBaseControl IO m)
-  => Env.Environment -> SourceConfiguration -> m (Either QErr ResolvedSource)
-resolveSource env config = runExceptT do
-  let SourceConfiguration urlConf connSettings = config
-      SourceConnSettings maxConns idleTimeout retries = connSettings
+type ResolveCustomSource =
+     Env.Environment 
+  -> SourceConfiguration
+  -> [SourceConfiguration]
+  -> IO (Either QErr PGSourceConfig)
+
+class Monad m => HasResolveCustomSource m where
+  askResolveCustomSource :: m ResolveCustomSource
+
+  -- A default for monad transformer instances
+  default askResolveCustomSource
+    :: (m ~ t n, MonadTrans t, HasResolveCustomSource n)
+    => m ResolveCustomSource
+  askResolveCustomSource = lift askResolveCustomSource
+
+instance HasResolveCustomSource m => HasResolveCustomSource (ReaderT r m)
+instance HasResolveCustomSource m => HasResolveCustomSource (ExceptT e m)
+instance HasResolveCustomSource m => HasResolveCustomSource (TraceT m)
+
+defaultResolveCustomSource :: ResolveCustomSource
+defaultResolveCustomSource env (SourceConfiguration urlConf connSettings) _replicas = runExceptT do
+  let SourceConnSettings maxConns idleTimeout retries = connSettings
   urlText <- resolveUrlConf env urlConf
   let connInfo = Q.ConnInfo retries $ Q.CDDatabaseURI $ txtToBs urlText
       connParams = Q.defaultConnParams{ Q.cpIdleTime = idleTimeout
@@ -27,7 +44,17 @@ resolveSource env config = runExceptT do
                                       }
   pgPool <- liftIO $ Q.initPGPool connInfo connParams (\_ -> pure ()) -- FIXME? Pg logger
   let pgExecCtx = mkPGExecCtx Q.ReadCommitted pgPool
-      sourceConfig  = PGSourceConfig pgExecCtx connInfo
+  pure $ PGSourceConfig pgExecCtx connInfo
+
+resolveSource
+  :: (MonadIO m, MonadBaseControl IO m, HasResolveCustomSource m)
+  => Env.Environment 
+  -> SourceConfiguration 
+  -> [SourceConfiguration]
+  -> m (Either QErr ResolvedSource)
+resolveSource env config replicas = runExceptT do
+  resolver <- askResolveCustomSource
+  sourceConfig <- ExceptT . liftIO $ resolver env config replicas
 
   (tablesMeta, functionsMeta, pgScalars) <- runLazyTx (_pscExecCtx sourceConfig) Q.ReadWrite $ do
     initSource

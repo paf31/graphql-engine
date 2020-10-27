@@ -61,6 +61,7 @@ import           Hasura.GraphQL.Transport.HTTP.Protocol    (toParsed)
 import           Hasura.Logging
 import           Hasura.Prelude
 import           Hasura.RQL.DDL.Schema.Cache
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.Types
 import           Hasura.RQL.Types.Run
 import           Hasura.Server.API.Query
@@ -228,7 +229,7 @@ initialiseCtx env (HGEOptionsG rci metadataDbUrl hgeCmd) = do
     migrateCatalogSchema logger pgLogger env connParams rci metadataDbUrl
 
   schemaCacheE <- runExceptT
-    $ peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx) metadata
+    $ peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx {- TODO: -} defaultResolveCustomSource) metadata
     $ buildRebuildableSchemaCache env
 
   schemaCache <- fmap fst $ onLeft schemaCacheE $ \err -> do
@@ -326,6 +327,7 @@ runHGEServer
      , Tracing.HasReporter m
      , MonadQueryInstrumentation m
      , MonadMetadataStorage m
+     , HasResolveCustomSource m
      )
   => Env.Environment
   -> ServeOptions impl
@@ -356,6 +358,8 @@ runHGEServer env ServeOptions{..} InitCtx{..} _ initTime
   let sqlGenCtx = SQLGenCtx soStringifyNum
       Loggers loggerCtx logger _ = _icLoggers
       SchemaSyncCtx schemaSyncListenerThread schemaSyncEventRef = schemaSyncCtx
+
+  srcResolver <- askResolveCustomSource
 
   authModeRes <- runExceptT $ setupAuthMode soAdminSecret soAuthHook soJwtSecret soUnAuthRole
                               _icHttpManager logger
@@ -393,7 +397,7 @@ runHGEServer env ServeOptions{..} InitCtx{..} _ initTime
 
   -- start background thread for schema sync event processing
   schemaSyncProcessorThread <-
-    startSchemaSyncProcessorThread sqlGenCtx
+    startSchemaSyncProcessorThread sqlGenCtx srcResolver
     logger _icHttpManager schemaSyncEventRef cacheRef _icInstanceId
 
   let
@@ -631,7 +635,7 @@ runAsAdmin
   -> m (Either QErr a)
 runAsAdmin sqlGenCtx httpManager metadata m =
   fmap (fmap fst) $ runExceptT $
-    peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx) metadata m
+    peelMetadataRun (RunCtx adminUserInfo httpManager sqlGenCtx {- TODO: -} defaultResolveCustomSource) metadata m
 
 execQuery
   :: ( HasVersion
@@ -646,7 +650,7 @@ execQuery env httpManager metadata queryBs = runExceptT do
   QueryWithSource source query <- case A.decode queryBs of
     Just jVal -> decodeValue jVal
     Nothing   -> throw400 InvalidJSON "invalid json"
-  let runCtx = RunCtx adminUserInfo httpManager (SQLGenCtx False)
+  let runCtx = RunCtx adminUserInfo httpManager (SQLGenCtx False) {- TODO: -} defaultResolveCustomSource
       actionM = do
         buildSchemaCacheStrict noMetadataModify
         encJToLBS <$> runQueryM env source query
@@ -666,6 +670,9 @@ execQuery env httpManager metadata queryBs = runExceptT do
           & fmap fst
 
 instance Tracing.HasReporter ServerAppM
+
+instance HasResolveCustomSource ServerAppM where
+  askResolveCustomSource = pure defaultResolveCustomSource
 
 instance MonadQueryInstrumentation ServerAppM where
   askInstrumentQuery _ = pure (id, noProfile)

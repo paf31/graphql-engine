@@ -53,7 +53,8 @@ import           Hasura.RQL.DDL.Schema.Cache.Permission
 import           Hasura.RQL.DDL.Schema.Diff
 import           Hasura.RQL.DDL.Schema.Enum               (fetchEnumValuesFromDb)
 import           Hasura.RQL.DDL.Schema.Function
-import           Hasura.RQL.DDL.Schema.Source             (fetchPgScalars, resolveSource)
+import           Hasura.RQL.DDL.Schema.Source             (HasResolveCustomSource,
+                                                           fetchPgScalars, resolveSource)
 import           Hasura.RQL.DDL.Schema.Table
 import           Hasura.RQL.Types                         hiding (tmTable)
 import           Hasura.Server.Version                    (HasVersion)
@@ -62,6 +63,7 @@ import           Hasura.SQL.Types
 buildRebuildableSchemaCache
   :: ( HasVersion, MonadIO m, MonadError QErr m
      , HasHttpManager m, HasSQLGenCtx m, MonadMetadata m
+     , HasResolveCustomSource m
      )
   => Env.Environment
   -> m RebuildableSchemaCache
@@ -96,7 +98,7 @@ instance (Monad m) => CacheRM (CacheRWT m) where
   askSchemaCache = CacheRWT $ gets (lastBuiltSchemaCache . (^. _1))
 
 instance ( MonadIO m , MonadMetadata m, MonadError QErr m
-         , HasHttpManager m, HasSQLGenCtx m
+         , HasHttpManager m, HasSQLGenCtx m, HasResolveCustomSource m
          ) => CacheRWM (CacheRWT m) where
   buildSchemaCacheWithOptions buildReason invalidations metadataModifier = CacheRWT do
     (RebuildableSchemaCache _ invalidationKeys rule, oldInvalidations, resolvedSources) <- get
@@ -128,7 +130,7 @@ buildSchemaCacheRule
   :: ( HasVersion, ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
      , MonadIO m, MonadUnique m, MonadError QErr m
      , MonadReader BuildContext m, HasHttpManager m, HasSQLGenCtx m
-     , MonadBaseControl IO m
+     , MonadBaseControl IO m, HasResolveCustomSource m
      )
   => Env.Environment
   -> (Metadata, InvalidationKeys) `arr` SchemaCache
@@ -193,6 +195,7 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
          , ArrowWriter (Seq CollectedInfo) arr
          , MonadIO m, MonadBaseControl IO m
          , MonadReader BuildContext m
+         , HasResolveCustomSource m
          )
       => ( Inc.Dependency (HashMap SourceName Inc.InvalidationKey)
          , SourceMetadata
@@ -203,14 +206,14 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
       Inc.dependOn -< Inc.selectKeyD sourceName invalidationKeys
       (| withRecordInconsistency (
            liftEitherA <<< bindA -< (getResolvedSourceFromBuildContext sourceName <$> ask) >>= \case
-               Nothing -> resolveSource env $ _smConfiguration sourceMetadata
+               Nothing -> resolveSource env (_smConfiguration sourceMetadata) (_smReplicas sourceMetadata)
                Just rs -> pure $ Right rs)
        |) metadataObj
 
     buildSource
       :: ( ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
          , ArrowWriter (Seq CollectedInfo) arr, MonadReader BuildContext m
-         , HasSQLGenCtx m, MonadIO m, MonadError QErr m)
+         , HasSQLGenCtx m, MonadIO m, MonadError QErr m, HasResolveCustomSource m)
       => ( SourceMetadata
          , PGSourceConfig
          , PostgresTablesMetadata
@@ -220,7 +223,7 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
          , Inc.Dependency InvalidationKeys
          ) `arr` SourceOutput
     buildSource = proc (sourceMetadata, sourceConfig, pgTables, pgFunctions, enumTables, remoteSchemaMap, invalidationKeys) -> do
-      let SourceMetadata source tables functions _ = sourceMetadata
+      let SourceMetadata source tables functions _ _ = sourceMetadata
           (tableInputs, nonColumnInputs, permissions) = unzip3 $ map mkTableInputs $ M.elems tables
           eventTriggers = map (_tmTable &&& (M.elems . _tmEventTriggers)) (M.elems tables)
           -- HashMap k a -> HashMap k b -> HashMap k (a, b)
@@ -281,7 +284,7 @@ buildSchemaCacheRule env = proc (metadata, invalidationKeys) -> do
       :: ( ArrowChoice arr, Inc.ArrowDistribute arr, Inc.ArrowCache m arr
          , ArrowWriter (Seq CollectedInfo) arr, MonadIO m, MonadBaseControl IO m
          , MonadError QErr m, MonadUnique m, MonadReader BuildContext m
-         , HasHttpManager m, HasSQLGenCtx m )
+         , HasHttpManager m, HasSQLGenCtx m, HasResolveCustomSource m )
       => (Metadata, Inc.Dependency InvalidationKeys) `arr` BuildOutputs
     buildAndCollectInfo = proc (metadata, invalidationKeys) -> do
       let Metadata sources remoteSchemas collections allowlists

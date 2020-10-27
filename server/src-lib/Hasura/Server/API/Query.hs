@@ -4,6 +4,7 @@ module Hasura.Server.API.Query where
 import           Hasura.EncJSON
 import           Hasura.Prelude
 import           Hasura.RQL.DDL.Schema
+import           Hasura.RQL.DDL.Schema.Source
 import           Hasura.RQL.DML.Count
 import           Hasura.RQL.DML.Delete
 import           Hasura.RQL.DML.Insert
@@ -79,11 +80,12 @@ runQuery
   -> UserInfo
   -> HTTP.Manager
   -> SQLGenCtx
+  -> ResolveCustomSource
   -> RebuildableSchemaCache
   -> Metadata
   -> QueryWithSource
   -> m (EncJSON, Maybe MetadataStateResult)
-runQuery env userInfo httpManager sqlGenCtx schemaCache metadata request = do
+runQuery env userInfo httpManager sqlGenCtx srcResolver schemaCache metadata request = do
   traceCtx <- Tracing.currentContext
   accessMode <- fromMaybe Q.ReadWrite <$> getQueryAccessMode rqlQuery
   let sc = lastBuiltSchemaCache schemaCache
@@ -93,7 +95,7 @@ runQuery env userInfo httpManager sqlGenCtx schemaCache metadata request = do
     (((r, tracemeta), rsc, ci), meta)
       <- x & runCacheRWT schemaCache
            & peelQueryRun sourceConfig accessMode (Just traceCtx)
-             (RunCtx userInfo httpManager sqlGenCtx) metadata
+             (RunCtx userInfo httpManager sqlGenCtx srcResolver) metadata
            & runExceptT
            & liftEitherM
     let metadataStateRes = MetadataStateResult rsc ci meta
