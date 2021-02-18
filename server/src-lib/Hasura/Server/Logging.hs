@@ -122,8 +122,10 @@ class (Monad m) => HttpLog m where
     -- ^ request id of the request
     -> Wai.Request
     -- ^ the Wai.Request object
-    -> Either BL.ByteString Value
-    -- ^ the actual request body (bytestring if unparsed, Aeson value if parsed)
+    -> BL.ByteString
+    -- ^ the actual request body
+    -> Maybe Value
+    -- ^ request body, if parsed
     -> QErr
     -- ^ the error
     -> [HTTP.Header]
@@ -139,7 +141,7 @@ class (Monad m) => HttpLog m where
     -- ^ request id of the request
     -> Wai.Request
     -- ^ the Wai.Request object
-    -> Maybe Value
+    -> Maybe (Value, BL.ByteString)
     -- ^ the actual request body, if present
     -> BL.ByteString
     -- ^ the response bytes
@@ -155,7 +157,7 @@ class (Monad m) => HttpLog m where
     -> m ()
 
 instance HttpLog m => HttpLog (TraceT m) where
-  logHttpError a b c d e f g = lift $ logHttpError a b c d e f g
+  logHttpError a b c d e f g h = lift $ logHttpError a b c d e f g h
   logHttpSuccess a b c d e f g h i j = lift $ logHttpSuccess a b c d e f g h i j
 
 -- | Log information about the HTTP request
@@ -186,6 +188,7 @@ data OperationLog
   = OperationLog
   { olRequestId          :: !RequestId
   , olUserVars           :: !(Maybe SessionVariables)
+  , olRequestSize        :: !(Maybe Int64)
   , olResponseSize       :: !(Maybe Int64)
   , olRequestReadTime    :: !(Maybe Seconds)
   -- ^ Request IO wait time, i.e. time spent reading the full request from the socket.
@@ -212,24 +215,26 @@ mkHttpAccessLogContext
   -- ^ Maybe because it may not have been resolved
   -> RequestId
   -> Wai.Request
+  -> Maybe (Value, BL.ByteString)
   -> BL.ByteString
   -> Maybe (DiffTime, DiffTime)
   -> Maybe CompressionType
   -> [HTTP.Header]
   -> HttpLogContext
-mkHttpAccessLogContext userInfoM reqId req res mTiming compressTypeM headers =
+mkHttpAccessLogContext userInfoM reqId req reqBody res mTiming compressTypeM headers =
   let http = HttpInfoLog
              { hlStatus      = status
              , hlMethod      = bsToTxt $ Wai.requestMethod req
              , hlSource      = Wai.getSourceFromFallback req
              , hlPath        = bsToTxt $ Wai.rawPathInfo req
              , hlHttpVersion = Wai.httpVersion req
-             , hlCompression  = compressTypeM
+             , hlCompression = compressTypeM
              , hlHeaders     = headers
              }
       op = OperationLog
            { olRequestId    = reqId
            , olUserVars     = _uiSession <$> userInfoM
+           , olRequestSize  = reqSize
            , olResponseSize = respSize
            , olRequestReadTime    = Seconds . fst <$> mTiming
            , olQueryExecutionTime = Seconds . snd <$> mTiming
@@ -241,6 +246,7 @@ mkHttpAccessLogContext userInfoM reqId req res mTiming compressTypeM headers =
   where
     status = HTTP.status200
     respSize = Just $ BL.length res
+    reqSize = fmap (BL.length . snd) reqBody
 
 mkHttpErrorLogContext
   :: Maybe UserInfo
@@ -248,12 +254,14 @@ mkHttpErrorLogContext
   -> RequestId
   -> Wai.Request
   -> QErr
-  -> Either BL.ByteString Value
+  -> BL.ByteString
+  -> Maybe Value
+  -- ^ request body, parsed
   -> Maybe (DiffTime, DiffTime)
   -> Maybe CompressionType
   -> [HTTP.Header]
   -> HttpLogContext
-mkHttpErrorLogContext userInfoM reqId req err query mTiming compressTypeM headers =
+mkHttpErrorLogContext userInfoM reqId req err reqBody query mTiming compressTypeM headers =
   let http = HttpInfoLog
              { hlStatus      = qeStatus err
              , hlMethod      = bsToTxt $ Wai.requestMethod req
@@ -266,11 +274,12 @@ mkHttpErrorLogContext userInfoM reqId req err query mTiming compressTypeM header
       op = OperationLog
            { olRequestId          = reqId
            , olUserVars           = _uiSession <$> userInfoM
+           , olRequestSize        = Just $ BL.length reqBody
            , olResponseSize       = Just $ BL.length $ encode err
            , olRequestReadTime    = Seconds . fst <$> mTiming
            , olQueryExecutionTime = Seconds . snd <$> mTiming
-           , olQuery              = either (const Nothing) Just query
-           , olRawQuery           = either (Just . bsToTxt . BL.toStrict) (const Nothing) query
+           , olQuery              = query
+           , olRawQuery           = maybe ((Just . bsToTxt . BL.toStrict) reqBody) (const Nothing) query
            , olError              = Just err
            }
   in HttpLogContext http op

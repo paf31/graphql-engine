@@ -283,7 +283,7 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
       lift $ Tracing.attachMetadata [("request_id", unRequestId requestId)]
 
       userInfoE <- fmap fst <$> lift (resolveUserInfo logger manager headers authMode)
-      userInfo  <- either (logErrorAndResp Nothing requestId req (Left reqBody) False headers . qErrModifier)
+      userInfo  <- either (logErrorAndResp Nothing requestId req reqBody Nothing False headers . qErrModifier)
                   return userInfoE
 
       let handlerState = HandlerCtx serverCtx userInfo headers requestId ipAddress
@@ -296,19 +296,18 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
           return (res, Nothing)
         AHPost handler -> do
           parsedReqE <- runExceptT $ parseBody reqBody
-          parsedReq  <- either (logErrorAndResp (Just userInfo) requestId req (Left reqBody) includeInternal headers . qErrModifier)
+          parsedReq  <- either (logErrorAndResp (Just userInfo) requestId req reqBody Nothing includeInternal headers . qErrModifier)
                         return parsedReqE
           res <- lift $ runReaderT (runExceptT $ handler parsedReq) handlerState
-          return (res, Just parsedReq)
+          return (res, Just (parsedReq, reqBody))
 
       -- apply the error modifier
       let modResult = fmapL qErrModifier result
 
       -- log and return result
       case modResult of
-        Left err  -> let jErr = maybe (Left reqBody) (Right . toJSON) q
-                    in logErrorAndResp (Just userInfo) requestId req jErr includeInternal headers err
-        Right res -> logSuccessAndResp (Just userInfo) requestId req (fmap toJSON q) res (Just (ioWaitTime, serviceTime)) headers
+        Left err  -> logErrorAndResp (Just userInfo) requestId req reqBody (fmap (toJSON . fst) q) includeInternal headers err
+        Right res -> logSuccessAndResp (Just userInfo) requestId req (fmap (first toJSON) q) res (Just (ioWaitTime, serviceTime)) headers
 
     where
       logger = scLogger serverCtx
@@ -318,13 +317,14 @@ mkSpockAction serverCtx qErrEncoder qErrModifier apiHandler = do
         => Maybe UserInfo
         -> RequestId
         -> Wai.Request
-        -> Either BL.ByteString Value
+        -> BL.ByteString
+        -> Maybe Value
         -> Bool
         -> [HTTP.Header]
         -> QErr
         -> Spock.ActionCtxT ctx m a
-      logErrorAndResp userInfo reqId req reqBody includeInternal headers qErr = do
-        lift $ logHttpError logger userInfo reqId req reqBody qErr headers
+      logErrorAndResp userInfo reqId req reqBody query includeInternal headers qErr = do
+        lift $ logHttpError logger userInfo reqId req reqBody query qErr headers
         Spock.setStatus $ qeStatus qErr
         Spock.json $ qErrEncoder includeInternal qErr
 
@@ -794,7 +794,7 @@ raiseGenericApiError logger headers qErr = do
   req <- Spock.request
   reqBody <- liftIO $ Wai.strictRequestBody req
   reqId <- getRequestId $ Wai.requestHeaders req
-  lift $ logHttpError logger Nothing reqId req (Left reqBody) qErr headers
+  lift $ logHttpError logger Nothing reqId req reqBody Nothing qErr headers
   setHeader jsonHeader
   Spock.setStatus $ qeStatus qErr
   Spock.lazyBytes $ encode qErr
